@@ -32,11 +32,11 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def create_token(user_id: str, username: str) -> str:
+def create_token(user_id: str, phone: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     payload = {
         "sub": user_id,
-        "username": username,
+        "phone": phone,
         "exp": expire,
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
@@ -50,17 +50,17 @@ def decode_token(token: str) -> dict:
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> dict:
-    """从 Authorization: Bearer <token> 中解析 user_id 和 username。"""
+    """从 Authorization: Bearer <token> 中解析 user_id 和 phone。"""
     try:
         payload = decode_token(credentials.credentials)
         user_id = payload.get("sub")
-        username = payload.get("username")
+        phone = payload.get("phone")
         if not user_id:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token 无效")
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token 无效或已过期")
 
-    # 校验来源数据库中的用户是否仍然存在
+    # 校验数据库中的用户是否仍然存在
     driver = get_neo4j_driver()
     try:
         user = _get_user_from_db(driver, user_id)
@@ -69,34 +69,40 @@ async def get_current_user(
     finally:
         driver.close()
 
-    return {"user_id": user["user_id"], "username": user["username"]}
+    return {"user_id": user["user_id"], "phone": user["phone"]}
 
 
 # ==========================================================
 # Neo4j 用户表操作
 # ==========================================================
 
-def _find_user_by_username(driver, username: str) -> dict | None:
+def _find_user_by_phone(driver, phone: str) -> dict | None:
     records, _, _ = driver.execute_query(
-        "MATCH (u:User {username: $username}) RETURN u.user_id AS user_id, u.username AS username, u.hashed_password AS hashed_password",
-        {"username": username},
+        """
+        MATCH (u:User {phone_number: $phone})
+        RETURN u.user_id AS user_id, u.phone_number AS phone, u.hashed_password AS hashed_password
+        """,
+        {"phone": phone},
     )
     return records[0] if records else None
 
 
 def _get_user_from_db(driver, user_id: str) -> dict | None:
     records, _, _ = driver.execute_query(
-        "MATCH (u:User {user_id: $user_id}) RETURN u.user_id AS user_id, u.username AS username",
+        """
+        MATCH (u:User {user_id: $user_id})
+        RETURN u.user_id AS user_id, u.phone_number AS phone
+        """,
         {"user_id": user_id},
     )
     return records[0] if records else None
 
 
-def create_user_in_db(driver, username: str, password: str) -> dict:
-    """在 Neo4j 中创建 :User 节点。返回 {user_id, username}。"""
-    existing = _find_user_by_username(driver, username)
+def create_user_in_db(driver, phone: str, password: str) -> dict:
+    """在 Neo4j 中创建 :User 节点。phone_number 全局唯一。返回 {user_id, phone}。"""
+    existing = _find_user_by_phone(driver, phone)
     if existing:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已存在")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="手机号已注册")
 
     user_id = str(uuid.uuid4())
     hashed = hash_password(password)
@@ -106,22 +112,29 @@ def create_user_in_db(driver, username: str, password: str) -> dict:
         """
         CREATE (u:User {
             user_id: $user_id,
-            username: $username,
+            phone_number: $phone,
             hashed_password: $hashed_password,
+            phone_numbers: $phone_numbers,
             created_at: $created_at
         })
         """,
-        {"user_id": user_id, "username": username, "hashed_password": hashed, "created_at": now},
+        {
+            "user_id": user_id,
+            "phone": phone,
+            "hashed_password": hashed,
+            "phone_numbers": [phone],
+            "created_at": now,
+        },
     )
 
-    return {"user_id": user_id, "username": username}
+    return {"user_id": user_id, "phone": phone}
 
 
-def authenticate_user(driver, username: str, password: str) -> dict:
-    """校验用户名密码，成功返回 {user_id, username, token}。"""
-    user = _find_user_by_username(driver, username)
+def authenticate_user(driver, phone: str, password: str) -> dict:
+    """校验手机号密码，成功返回 {user_id, phone, token}。"""
+    user = _find_user_by_phone(driver, phone)
     if not user or not verify_password(password, user["hashed_password"]):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="手机号或密码错误")
 
-    token = create_token(user["user_id"], user["username"])
-    return {"user_id": user["user_id"], "username": user["username"], "token": token}
+    token = create_token(user["user_id"], user["phone"])
+    return {"user_id": user["user_id"], "phone": user["phone"], "token": token}
