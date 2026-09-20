@@ -1,0 +1,37 @@
+# ============================================================
+# Agent 状态定义
+# ============================================================
+
+from typing import TypedDict, List, Optional, Any
+
+
+class AgentState(TypedDict):
+    # === 输入 ===
+    user_input: str                    # 用户原始输入
+    user_id: str                       # 当前用户 ID
+    user_name: str                     # 当前用户姓名
+    history: List[dict]                # 最近对话历史
+
+    # === 意图分类 ===
+    intent: str                        # 识别的意图：ADD_PERSON / QUERY_PERSON / ...
+    intent_confidence: float           # 置信度 0.0-1.0
+
+    # === 信息提取 ===
+    extracted_info: dict               # 从用户输入中提取的结构化信息
+
+    # === 任务规划 ===
+    tool_calls: List[dict]             # 待执行的 Tool 调用序列
+    # 每个元素: {"tool": "find_person", "args": {"query": "李四"}}
+
+    # === 执行 ===
+    tool_results: List[dict]           # 每个 Tool 的执行结果
+    execution_errors: List[str]        # 执行中的错误
+    retry_count: int                   # 重试次数
+
+    # === 确认 ===
+    needs_confirmation: bool           # 是否需要用户确认
+    confirmation_type: str             # "delete" | "merge" | "ambiguous"
+    user_confirmed: bool               # 用户是否已确认
+
+    # === 输出 ===
+    response: str                      # 最终回复给用户
