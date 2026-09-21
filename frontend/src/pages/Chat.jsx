@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Button, Input, Loading, MessagePlugin, Avatar } from 'tdesign-react'
-import { SendIcon, LogoutIcon } from 'tdesign-icons-react'
+import { Button, Input, Loading, MessagePlugin } from 'tdesign-react'
 import { sendMessage } from '../api/chat'
 
 export default function Chat() {
@@ -53,7 +52,7 @@ export default function Chat() {
         <span style={{ fontWeight: 600 }}>AI 人际关系助手</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ fontSize: 13, opacity: 0.85 }}>{user.phone}</span>
-          <Button variant="text" style={{ color: '#fff' }} icon={<LogoutIcon />} onClick={handleLogout}>
+          <Button variant="text" style={{ color: '#fff' }} onClick={handleLogout}>
             退出
           </Button>
         </div>
@@ -73,7 +72,7 @@ export default function Chat() {
             justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
           }}>
             {msg.role === 'assistant' && (
-              <Avatar size="small" style={{ marginRight: 8, flexShrink: 0 }}>🤖</Avatar>
+              <span style={{ marginRight: 8, flexShrink: 0, fontSize: 20 }}>🤖</span>
             )}
             <div style={{
               maxWidth: '70%', padding: '10px 16px', borderRadius: 12,
