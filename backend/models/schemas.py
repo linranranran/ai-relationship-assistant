@@ -19,14 +19,13 @@ class ChatRequest(BaseModel):
 
 class RegisterRequest(BaseModel):
     """用户注册请求"""
-    name: str = Field(..., description="用户姓名")
+    phone_number: str = Field(..., description="手机号")
     password: str = Field(..., description="密码")
-    gender: str = Field(default="未知", description="性别")
 
 
 class LoginRequest(BaseModel):
     """用户登录请求"""
-    name: str = Field(..., description="用户姓名")
+    phone_number: str = Field(..., description="手机号")
     password: str = Field(..., description="密码")
 
 
