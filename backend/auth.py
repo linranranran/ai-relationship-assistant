@@ -8,13 +8,20 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 
 from backend.config import SECRET_KEY
 from backend.db.neo4j_client import get_neo4j_driver
 
 # ── 密码哈希 ──
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 # ── JWT 配置 ──
 ALGORITHM = "HS256"
@@ -22,14 +29,6 @@ ACCESS_TOKEN_EXPIRE_HOURS = 24 * 7  # 7 天
 
 # ── HTTP Bearer 认证提取器 ──
 bearer_scheme = HTTPBearer()
-
-
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
 
 
 def create_token(user_id: str, phone: str) -> str:
