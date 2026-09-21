@@ -41,12 +41,9 @@ def build_agent_graph() -> StateGraph:
     # ── 入口 ──
     graph.set_entry_point("classify_intent")
 
-    # ── 默认边（Command 可动态覆盖）──
-    graph.add_edge("classify_intent", "extract_info")
-    graph.add_edge("extract_info", "plan_tasks")
-    graph.add_edge("plan_tasks", "execute_tools")
-    graph.add_edge("execute_tools", "generate_response")
-    # generate_response 和 ask_clarification 无出边 → 自动 END
+    # ── 纯 Command 路由，不加默认边以免和 Command goto 并行 ──
+    # 每个节点通过 Command(update, goto) 自行决定下一步
+    # 终端节点 (generate_response / ask_clarification) 无出边 → 自动 END
 
     return graph.compile()
 
