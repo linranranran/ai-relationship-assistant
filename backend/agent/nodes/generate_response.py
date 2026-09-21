@@ -18,8 +18,11 @@ def generate_response(state: AgentState) -> AgentState:
     输出：state["response"]
     """
 
-    prompt = GENERATE_RESPONSE_PROMPT.format(intent = state["intent"], user_input = state["user_input"],tool_results=state["tool_results"])
+    prompt = GENERATE_RESPONSE_PROMPT.format(
+        intent=state["intent"],
+        user_input=state["user_input"],
+        tool_results=state["tool_results"],
+    )
     llm_client = get_llm_client()
     response = chat(llm_client, "", [{"role": "user", "content": prompt}])
-    state["response"] = response
-    return state
+    return {"response": response}

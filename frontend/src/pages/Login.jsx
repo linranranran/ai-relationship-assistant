@@ -23,7 +23,7 @@ export default function Login() {
       localStorage.setItem('token', res.data.token)
       localStorage.setItem('user', JSON.stringify(res.data))
       MessagePlugin.success('登录成功')
-      navigate('/chat')
+      window.location.href = '/chat'
     } catch (err) {
       MessagePlugin.error(err.response?.data?.detail || '登录失败')
     } finally {

@@ -64,9 +64,17 @@ async def chat(request: ChatRequest):
         user_id=request.user_id,
         user_name=request.user_name,
         history=request.history,
+        intent="",
+        intent_confidence=0.0,
+        extracted_info={},
+        tool_calls=[],
         tool_results=[],
         execution_errors=[],
         retry_count=0,
+        needs_confirmation=False,
+        confirmation_type="",
+        user_confirmed=False,
+        response="",
     )
     final_state = agent_graph.invoke(initial_state)
     return ChatResponse(

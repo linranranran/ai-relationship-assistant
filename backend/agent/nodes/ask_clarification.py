@@ -23,5 +23,4 @@ def ask_clarification(state: AgentState) -> AgentState:
     system_prompt = ASK_CLARIFICATION_PROMPT.format(user_input=user_input)
     llm_client = get_llm_client()
     response_str = chat(llm_client, system_prompt, [{"role": "user", "content": user_input}])
-    state["response"] = response_str
-    return state
+    return {"response": response_str}

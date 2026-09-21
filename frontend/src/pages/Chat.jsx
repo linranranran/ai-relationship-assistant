@@ -84,13 +84,13 @@ export default function Chat() {
               {msg.content}
             </div>
             {msg.role === 'user' && (
-              <Avatar size="small" style={{ marginLeft: 8, flexShrink: 0 }}>👤</Avatar>
+              <span style={{ marginLeft: 8, flexShrink: 0, fontSize: 20 }}>👤</span>
             )}
           </div>
         ))}
         {sending && (
           <div style={{ display: 'flex', marginBottom: 16 }}>
-            <Avatar size="small" style={{ marginRight: 8 }}>🤖</Avatar>
+            <span style={{ marginRight: 8, fontSize: 20 }}>🤖</span>
             <div style={{ padding: '10px 16px', borderRadius: 12, background: '#fff' }}>
               <Loading size="small" text="思考中..." />
             </div>
@@ -113,7 +113,6 @@ export default function Chat() {
         />
         <Button
           theme="primary"
-          icon={<SendIcon />}
           onClick={handleSend}
           loading={sending}
         >
