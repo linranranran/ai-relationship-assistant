@@ -37,7 +37,4 @@ def plan_tasks(state: AgentState) -> Command:
             goto="execute_tools",
         )
     except Exception as e:
-        return Command(
-            update={"response": f"无法确定你的需求，请补充信息。{str(e)}"},
-            goto="ask_clarification",
-        )
+        return Command(update={}, goto="ask_clarification")
