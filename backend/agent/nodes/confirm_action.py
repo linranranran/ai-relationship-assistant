@@ -1,42 +1,22 @@
-# ============================================================
-# 确认节点
-# ============================================================
+"""旧确认节点兼容入口。
 
-from backend.agent.state import AgentState
-from backend.agent.prompts.system_prompts import CONFIRM_ACTION_PROMPT
-from backend.services.llm import get_llm_client, chat
+最初的骨架准备通过大模型判断“用户是否确认”，这种方式无法证明用户确认的是
+哪一次操作，也无法真正暂停状态图。真实实现已经迁移到
+``request_confirmation.py``：它使用 LangGraph interrupt 保存检查点，并通过
+独立的恢复接口接收结构化布尔值。
 
+保留这个别名是为了避免你旧代码中的 import 立即报错；新代码请直接导入
+``request_confirmation``。
+"""
 
-def confirm_action(state: AgentState) -> AgentState:
-    """
-    需要用户确认时，生成确认提示。
-
-    输入：state["confirmation_type"], state["tool_results"]
-    输出：state["response"]
-    """
-    # TO-DO: 实现
-    #
-    # 提示：
-    # 1. 格式化 CONFIRM_ACTION_PROMPT
-    # 2. 调用 chat() 生成确认提示
-    # 3. 存入 state["response"]
-    # 4. 设置 state["needs_confirmation"] = True
-    #    （这样下一轮对话时，Agent 会感知到正在等待确认）
-    raise NotImplementedError("confirm_action — 等你来实现 ✍️")
+from backend.agent.nodes.request_confirmation import request_confirmation
 
 
-def route_after_confirmation(state: AgentState) -> str:
-    """
-    用户确认后，决定是执行还是取消。
+confirm_action = request_confirmation
 
-    Returns:
-        "execute" — 用户确认，执行操作
-        "cancel" — 用户取消，生成取消回复
-    """
-    # TO-DO: 实现
-    #
-    # 提示：
-    # 1. 检查 state["user_confirmed"] 是否为 True
-    # 2. 如果是 → "execute"
-    # 3. 如果否 → "cancel"
-    raise NotImplementedError("route_after_confirmation — 等你来实现 ✍️")
+
+def route_after_confirmation(*_args, **_kwargs):
+    raise RuntimeError(
+        "route_after_confirmation 已废弃：确认分支现在由 request_confirmation 的 "
+        "Command(goto=...) 完成"
+    )

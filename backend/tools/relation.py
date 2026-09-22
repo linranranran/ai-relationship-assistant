@@ -106,6 +106,13 @@ def delete_relation(**kwargs) -> dict:
     Returns:
         {"success": True}
     """
+    # 最后一层防线：即使上游节点以后被改坏，没有服务端授权也不能删除。
+    if kwargs.get("confirmed") is not True:
+        return {
+            **tool_response(msg="需要用户手动确认是否删除人物关系", success=False),
+            "needs_confirmation": True,
+        }
+
     # TO-DO: 实现
     owner_id = kwargs.get("owner_id")
     if not owner_id:

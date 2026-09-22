@@ -10,8 +10,19 @@ from backend.tools.person import add_person, update_person, delete_person, find_
 from backend.tools.relation import add_relation, update_relation, delete_relation
 from backend.tools.query import query_relation_path, get_person_detail, list_relations
 from backend.tools.kinship import get_kinship_title
-
-
+from backend.tools.schema.tool_args import (
+    AddPersonArgs,
+    AddRelationArgs,
+    DeletePersonArgs,
+    DeleteRelationArgs,
+    FindPersonArgs,
+    GetKinshipTitleArgs,
+    GetPersonDetailArgs,
+    ListRelationsArgs,
+    QueryRelationPathArgs,
+    UpdatePersonArgs,
+    UpdateRelationArgs,
+)
 
 TOOL_REGISTRY = {
     "add_person": add_person,
@@ -25,6 +36,20 @@ TOOL_REGISTRY = {
     "get_kinship_title": get_kinship_title,
     "get_person_detail": get_person_detail,
     "list_relations": list_relations,
+}
+
+TOOL_ARGUMENT_MODELS = {
+    "add_person": AddPersonArgs,
+    "update_person": UpdatePersonArgs,
+    "delete_person": DeletePersonArgs,
+    "add_relation": AddRelationArgs,
+    "update_relation": UpdateRelationArgs,
+    "delete_relation": DeleteRelationArgs,
+    "find_person": FindPersonArgs,
+    "query_relation_path": QueryRelationPathArgs,
+    "get_kinship_title": GetKinshipTitleArgs,
+    "get_person_detail": GetPersonDetailArgs,
+    "list_relations": ListRelationsArgs,
 }
 
 

@@ -5,9 +5,9 @@ The backend derives them from the authenticated user.
 """
 
 from datetime import datetime
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StringConstraints, field_validator
 
 
 PHONE_PATTERN = r"^1[3-9]\d{9}$"
@@ -31,6 +31,15 @@ class ChatRequest(StrictRequest):
     message: ChatMessage = Field(description="用户输入的消息")
 
 
+class ResumeAgentRequest(StrictRequest):
+    """恢复被 interrupt 暂停的 Agent；用户身份仍从令牌中获取。"""
+
+    interrupt_id: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)
+    ]
+    confirmed: StrictBool = Field(description="必须是 JSON 布尔值 true/false")
+
+
 class AuthRequest(StrictRequest):
     phone_number: PhoneNumber = Field(description="中国大陆手机号")
     password: Password = Field(description="密码")
@@ -51,10 +60,18 @@ class LoginRequest(AuthRequest):
     """用户登录请求。"""
 
 
+class ConfirmationPrompt(BaseModel):
+    interrupt_id: str
+    summary: str
+    tool_names: list[str] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     response: str = Field(description="Agent 的回复")
     intent: Optional[str] = Field(default=None, description="识别的意图")
     tool_calls: Optional[list[str]] = Field(default=None, description="执行的 Tool 列表")
+    status: Literal["COMPLETED", "CONFIRMATION_REQUIRED"] = "COMPLETED"
+    confirmation: Optional[ConfirmationPrompt] = None
 
 
 class PersonResponse(BaseModel):

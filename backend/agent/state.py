@@ -11,6 +11,7 @@ class AgentState(TypedDict):
     user_id: str                       # 当前用户 ID
     self_person_id: str                # 当前用户私有关系图中的“本人”节点 ID
     request_id: str                    # 本次请求链路 ID
+    thread_id: str                     # LangGraph 检查点 ID，只能由服务端生成
     user_name: str                     # 当前用户姓名
     history: List[dict]                # 最近对话历史
 
@@ -29,11 +30,13 @@ class AgentState(TypedDict):
     tool_results: List[dict]           # 每个 Tool 的执行结果
     execution_errors: List[str]        # 执行中的错误
     retry_count: int                   # 重试次数
+    next_tool_index: int               # 依赖执行器下一步要执行的 Tool 下标
 
     # === 确认 ===
     needs_confirmation: bool           # 是否需要用户确认
     confirmation_type: str             # "delete" | "merge" | "ambiguous"
     user_confirmed: bool               # 用户是否已确认
+    pending_confirmation: Optional[dict]  # 等待前端确认的结构化操作摘要
 
     # === 输出 ===
     response: str                      # 最终回复给用户

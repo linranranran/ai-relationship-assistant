@@ -3,7 +3,8 @@
 # 这是整个 Agent 的"大脑"，连接所有节点
 # ============================================================
 
-from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import StateGraph
 from backend.agent.state import AgentState
 from backend.agent.nodes.classify_intent import classify_intent
 from backend.agent.nodes.extract_info import extract_info
@@ -11,9 +12,10 @@ from backend.agent.nodes.plan_tasks import plan_tasks
 from backend.agent.nodes.execute_tools import execute_tools
 from backend.agent.nodes.generate_response import generate_response
 from backend.agent.nodes.ask_clarification import ask_clarification
+from backend.agent.nodes.request_confirmation import request_confirmation
 
 
-def build_agent_graph() -> StateGraph:
+def build_agent_graph(checkpointer=None):
     """
     构建并编译 Agent 状态图。
 
@@ -23,7 +25,8 @@ def build_agent_graph() -> StateGraph:
     节点流转（默认边 → Command 可覆盖）：
     classify_intent       → extract_info    （Command 可跳到 ask_clarification / plan_tasks / generate_response）
     extract_info          → plan_tasks      （无条件）
-    plan_tasks            → execute_tools   （Command 可跳到 ask_clarification）
+    plan_tasks            → execute_tools / request_confirmation
+    request_confirmation  → execute_tools / END
     execute_tools         → generate_response （Command 可跳到 ask_clarification）
     generate_response     → END             （终端节点，无出边）
     ask_clarification     → END             （终端节点，无出边）
@@ -37,6 +40,7 @@ def build_agent_graph() -> StateGraph:
     graph.add_node("execute_tools", execute_tools)
     graph.add_node("generate_response", generate_response)
     graph.add_node("ask_clarification", ask_clarification)
+    graph.add_node("request_confirmation", request_confirmation)
 
     # ── 入口 ──
     graph.set_entry_point("classify_intent")
@@ -45,8 +49,11 @@ def build_agent_graph() -> StateGraph:
     # 每个节点通过 Command(update, goto) 自行决定下一步
     # 终端节点 (generate_response / ask_clarification) 无出边 → 自动 END
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 # 编译后的 Agent 实例（供 router 调用）
-agent_graph = build_agent_graph()
+# 第一版用内存检查点：服务重启后，尚未确认的任务会丢失。
+# TODO(你来实现)：进入持久化阶段后替换为 SqliteSaver/PostgresSaver，
+# 并增加过期时间、幂等键和审计日志。图和节点代码不需要因此重写。
+agent_graph = build_agent_graph(checkpointer=InMemorySaver())

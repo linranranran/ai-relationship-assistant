@@ -72,12 +72,9 @@ DELETE_PERSON_TOOL = {
             "type": "object",
             "properties": {
                 "person_id": {"type": "string", "description": "要删除的人物 ID"},
-                "confirmed": {
-                    "type": "boolean",
-                    "description": "用户是否已确认删除。未明确说'确认删除'时必须为 false",
-                },
             },
-            "required": ["person_id", "confirmed"],
+            # confirmed 不暴露给模型；只能由 request_confirmation 节点注入。
+            "required": ["person_id"],
         },
     },
 }
@@ -125,7 +122,7 @@ DELETE_RELATION_TOOL = {
     "type": "function",
     "function": {
         "name": "delete_relation",
-        "description": "删除两个人之间的关系。",
+        "description": "删除两个人之间的关系。不可逆，执行前必须向用户确认。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -211,7 +208,7 @@ GET_PERSON_DETAIL_TOOL = {
 LIST_RELATIONS_TOOL = {
     "type": "function",
     "function": {
-        "name": "list_person_relations",
+        "name": "list_relations",
         "description": "列出某个人物的所有直接关系。如'张三认识哪些人'。",
         "parameters": {
             "type": "object",

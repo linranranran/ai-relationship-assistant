@@ -3,7 +3,7 @@
 # ============================================================
 from neo4j import GraphDatabase, Driver, Query
 from backend.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
-import uuid
+from backend.common import common_tool
 
 ALLOWED_FIELDS_CN = {"name":"姓名", "gender":"性别", "birth_year":"出生年月", "occupation":"职业","education":"学历", "hobbies":"爱好", "personality":"性格", "tags":"标签", "note":"备注"}
 
@@ -51,9 +51,6 @@ def get_neo4j_driver() -> Driver:
 # 每个函数签名+docstring 已经写好，你只需要实现函数体
 # ============================================================
 
-def generate_uuid() -> str:
-    return str(uuid.uuid4())[:8]
-
 def create_person(driver: Driver, properties: dict, owner_id: str) -> dict:
     """
     在 Neo4j 中创建一个 Person 节点。
@@ -72,7 +69,7 @@ def create_person(driver: Driver, properties: dict, owner_id: str) -> dict:
         {"person_id": "p_089", "name": "张三", "occupation": "金融", ...}
     """
     with driver.session() as session:
-        person_id = "p_" +generate_uuid()
+        person_id = common_tool.generate_prefix_uuid("p_")
         result = session.run(
             f"""
             CREATE ( p:Person {{{COMMON_PERSON_FIELD_NAME}}})
@@ -281,7 +278,7 @@ def add_relation(
 
     #查询关系
     with driver.session() as session:
-        rel_id = "r_" +generate_uuid()
+        rel_id = common_tool.generate_prefix_uuid("r_")
         result = session.run("""
             MATCH (a:Person {id: $from_person_id, owner_id: $owner_id}),
                   (b:Person {id: $to_person_id, owner_id: $owner_id})
@@ -344,7 +341,7 @@ def get_relation_by_id(driver: Driver, relation_id: str, owner_id: str) -> dict 
                WHERE r.owner = $owner_id
                  AND a.owner_id = $owner_id
                  AND b.owner_id = $owner_id
-               RETURN a.id AS from_id, b.id AS to_id,
+               RETURN a.id AS from_id, a.name AS from_name,b.id AS to_id,b.name AS to_name,
                       r.type AS type, r.owner AS owner,
                       r.through AS through, r.note AS note""",
             rid=relation_id,

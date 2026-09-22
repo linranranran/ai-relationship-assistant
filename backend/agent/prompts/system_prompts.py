@@ -113,10 +113,37 @@ PLAN_TASKS_PROMPT = """你是人际关系助手的任务规划器。根据意图
 1. 新增人物前，必须先 find_person 检查是否已存在
 2. 新增关系前，必须先 find_person 确认两个人物都存在
 3. 如果涉及的人不存在，先 add_person 再 add_relation
-4. 删除操作必须先确认（confirmed=false），等用户确认后再执行
+4. 删除操作只规划 person_id/relation_id，不要输出 confirmed；确认由服务端代码处理
 5. 查询称呼时，先 query_relation_path 再 get_kinship_title
 6. 语义搜索用 find_person，search_mode="semantic"
 7. 查询人物信息时，先 find_person 再 get_person_detail
+8. 不要输出 owner_id、user_id、self_person_id，这些身份参数由服务端注入
+9. 每一步必须提供唯一 step_id；依赖前一步时使用 depends_on
+10. 需要使用前一步结果时，用结构化 $ref，path 从 Tool 返回对象开始读取
+11. depends_on 和 $ref 只能引用排在当前步骤之前的 step_id
+
+=== 依赖调用示例 ===
+
+先精确查找张三，再查询详情：
+{{
+  "tool_calls": [
+    {{
+      "step_id": "find_target",
+      "tool": "find_person",
+      "args": {{"query": "张三", "search_mode": "exact"}}
+    }},
+    {{
+      "step_id": "get_target_detail",
+      "tool": "get_person_detail",
+      "depends_on": ["find_target"],
+      "args": {{
+        "person_id": {{
+          "$ref": {{"step_id": "find_target", "path": "data.id"}}
+        }}
+      }}
+    }}
+  ]
+}}
 
 === 当前上下文 ===
 当前用户: {user_name} ({user_id})
@@ -126,11 +153,9 @@ PLAN_TASKS_PROMPT = """你是人际关系助手的任务规划器。根据意图
 === 输出 JSON ===
 {{
   "tool_calls": [
-    {{"tool": "find_person", "args": {{"query": "李四"}}}},
-    {{"tool": "add_person", "args": {{"name": "张三", ...}}}},
-    {{"tool": "add_relation", "args": {{...}}}}
+    {{"step_id": "find_lisi", "tool": "find_person", "args": {{"query": "李四"}}}},
+    {{"step_id": "add_zhangsan", "tool": "add_person", "args": {{"name": "张三"}}}}
   ],
-  "needs_confirmation": false,
   "reasoning": "先查李四是否存在，再建张三，最后建关系"
 }}
 """

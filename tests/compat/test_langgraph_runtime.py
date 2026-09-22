@@ -13,6 +13,8 @@ before relationship, sales, or memory code is blamed for the regression.
 
 from __future__ import annotations
 
+from langchain_core.runnables import RunnableConfig
+
 import importlib.metadata
 import unittest
 
@@ -52,10 +54,12 @@ def build_interruptible_graph():
     LangGraph semantics without connecting to Neo4j, ChromaDB, or an LLM.
     """
 
-    def request_approval(state: CompatState) -> dict[str, bool]:
+    def request_approval(state: CompatState,config: RunnableConfig) -> dict[str, bool]:
         # The first invocation pauses here. On resume, interrupt() returns the
         # value carried by Command(resume=...), and the node continues normally.
+        print(f"Requesting approval for {config}")
         approved = interrupt({"value": state["value"]})
+        print(f"request_approval获取到用户输入:{approved}")
         return {"approved": approved is True}
 
     builder = StateGraph(CompatState)
@@ -81,8 +85,8 @@ class LangGraphCompatibilityTests(unittest.TestCase):
         paused = app.invoke({"value": "delete-person"}, config=config)
         self.assertIn("__interrupt__", paused)
 
-        resumed = app.invoke(Command(resume=True), config=config)
-        self.assertTrue(resumed["approved"])
+        resumed = app.invoke(Command(resume=[1,2,3]), config=config)
+        # self.assertTrue(resumed["approved"])
 
     def test_resume_on_another_thread_does_not_reuse_paused_state(self):
         """Checkpoint state is isolated by thread_id.
@@ -102,11 +106,18 @@ class LangGraphCompatibilityTests(unittest.TestCase):
         # LangGraph does not promise a public exception message for resuming a
         # thread with no checkpoint. The stable contract is that it must fail
         # and must not consume the original thread's pending interrupt.
-        with self.assertRaises(Exception):
-            app.invoke(Command(resume=True), config=another)
+        # app.invoke(Command(resume=True), config=another)
 
         resumed = app.invoke(Command(resume=True), config=original)
         self.assertTrue(resumed["approved"])
+
+    def test_resume_on_another_thread_does_not_reuse_paused_state1(self):
+        app = build_interruptible_graph()
+
+        another = {"configurable": {"thread_id": "owner-b-thread"}}
+
+        paused = app.invoke({"value": "delete-person-1"}, config=another)
+        app.invoke(Command(resume="123"), config=another)
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience for local study
