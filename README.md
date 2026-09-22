@@ -1,5 +1,19 @@
 # AI 人际关系助手
 
+## 当前开发入口（2026-09-21）
+
+项目当前主线是：**客户记忆 + 有依据的沟通建议 + 常见亲属称谓**，用于 AI Agent 应用开发岗位的求职展示。
+
+- [项目方向与一个月路线](docs/PROJECT_DIRECTION.md)：每天开工前阅读，明确目标、范围和验收标准。
+- [目标代码框架](docs/REFACTOR_FRAMEWORK.md)：目录、模块职责、接口和迁移顺序。
+- [30 天每日开发计划](docs/superpowers/plans/2026-09-21-30-day-development-schedule.md)：每天的编码、测试和交付目标。
+- [代码审阅与整改清单](docs/CODE_REVIEW_2026-09-21.md)：依据当前源码记录的问题及优先级。
+- [Agent 身份上下文契约](docs/AGENT_IDENTITY_CONTRACT.md)：你改造 Agent 时可直接依赖的 `owner_id`、`self_person_id` 和请求边界。
+- [分步整改实施计划](docs/superpowers/plans/2026-09-21-project-remediation.md)：具体文件、接口、任务和测试案例。
+- [带注释的学习骨架](docs/scaffolds/README.md)：由你完成函数实现，尚未接入运行中的应用。
+
+以下保留最初版本的介绍和启动说明；旧需求、旧计划中的范围和完成状态如与上述文档冲突，以最新文档和实际验证结果为准。
+
 用 AI 管理你的人际关系网络。再也不会叫不出名字、不知道该怎么称呼。
 
 ## 能做什么

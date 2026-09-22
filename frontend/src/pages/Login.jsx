@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { Button, Input, MessagePlugin, Tabs, Form } from 'tdesign-react'
 import { login, register } from '../api/auth'
+import { validateAuthInput } from '../validation/requests'
 
 const { TabPanel } = Tabs
 const { FormItem } = Form
@@ -10,11 +10,11 @@ export default function Login() {
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
-  const navigate = useNavigate()
 
   const handleLogin = async () => {
-    if (!phone || !password) {
-      MessagePlugin.warning('请填写手机号和密码')
+    const validation = validateAuthInput(phone, password)
+    if (!validation.valid) {
+      MessagePlugin.warning(validation.error)
       return
     }
     setLoading(true)
@@ -25,15 +25,16 @@ export default function Login() {
       MessagePlugin.success('登录成功')
       window.location.href = '/chat'
     } catch (err) {
-      MessagePlugin.error(err.response?.data?.detail || '登录失败')
+      MessagePlugin.error(err.response?.data?.detail || err.message || '登录失败')
     } finally {
       setLoading(false)
     }
   }
 
   const handleRegister = async () => {
-    if (!phone || !password) {
-      MessagePlugin.warning('请填写手机号和密码')
+    const validation = validateAuthInput(phone, password)
+    if (!validation.valid) {
+      MessagePlugin.warning(validation.error)
       return
     }
     setLoading(true)
@@ -43,7 +44,7 @@ export default function Login() {
       // 注册后自动登录
       await handleLogin()
     } catch (err) {
-      MessagePlugin.error(err.response?.data?.detail || '注册失败')
+      MessagePlugin.error(err.response?.data?.detail || err.message || '注册失败')
     } finally {
       setLoading(false)
     }
@@ -59,10 +60,10 @@ export default function Login() {
         <TabPanel value="login" label="登录">
           <Form labelAlign="top">
             <FormItem label="手机号">
-              <Input value={phone} onChange={setPhone} placeholder="请输入手机号" maxlength={11} />
+              <Input value={phone} onChange={setPhone} placeholder="请输入手机号" maxLength={11} />
             </FormItem>
             <FormItem label="密码">
-              <Input type="password" value={password} onChange={setPassword} placeholder="请输入密码" />
+              <Input type="password" value={password} onChange={setPassword} placeholder="请输入密码" maxLength={64} />
             </FormItem>
             <FormItem>
               <Button theme="primary" block loading={loading} onClick={handleLogin}>
@@ -74,10 +75,10 @@ export default function Login() {
         <TabPanel value="register" label="注册">
           <Form labelAlign="top">
             <FormItem label="手机号">
-              <Input value={phone} onChange={setPhone} placeholder="请输入手机号" maxlength={11} />
+              <Input value={phone} onChange={setPhone} placeholder="请输入手机号" maxLength={11} />
             </FormItem>
             <FormItem label="密码">
-              <Input type="password" value={password} onChange={setPassword} placeholder="请设置密码（至少6位）" />
+              <Input type="password" value={password} onChange={setPassword} placeholder="请设置密码（至少6位）" maxLength={64} />
             </FormItem>
             <FormItem>
               <Button theme="primary" block loading={loading} onClick={handleRegister}>

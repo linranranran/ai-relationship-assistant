@@ -37,6 +37,7 @@ def add_relation(**kwargs) -> dict:
     relation_type = kwargs.get("relation_type")
     if not relation_type:
         return tool_response(msg="缺少 relation_type，无法建立人物关系", success=False)
+    driver = None
     try:
         # 2.2 写入 Neo4j（本地 Docker，基本不炸）
         driver = get_neo4j_driver()
@@ -45,6 +46,9 @@ def add_relation(**kwargs) -> dict:
     except Exception as e:
         logger.error(f"创建人物关系失败: {str(e)}", exc_info=True)
         return tool_response(msg=f"创建人物关系失败: {str(e)}", success=False)
+    finally:
+        if driver is not None:
+            driver.close()
 
 
 def update_relation(**kwargs) -> dict:
@@ -66,10 +70,11 @@ def update_relation(**kwargs) -> dict:
     if not relation_id:
         return tool_response(msg="缺少 relation_id，无法修改人物关系", success=False)
     new_relation_type = kwargs.get("new_relation_type")
+    driver = None
     try:
         # 2.2 写入 Neo4j（本地 Docker，基本不炸）
         driver = get_neo4j_driver()
-        old_relation = neo4j_client.get_relation_by_id(driver , relation_id)
+        old_relation = neo4j_client.get_relation_by_id(driver, relation_id, owner_id)
         if old_relation is None:
             return tool_response(msg="未查询到正确的人物关系，请确认relation_id是否正确", success=False)
         # 2. 合并：旧值打底，新值覆盖
@@ -86,6 +91,9 @@ def update_relation(**kwargs) -> dict:
     except Exception as e:
         logger.error(f"修改人物关系失败: {str(e)}", exc_info=True)
         return tool_response(msg=f"修改人物关系失败: {str(e)}", success=False)
+    finally:
+        if driver is not None:
+            driver.close()
 
 
 def delete_relation(**kwargs) -> dict:
@@ -105,6 +113,7 @@ def delete_relation(**kwargs) -> dict:
     relation_id = kwargs.get("relation_id")
     if not relation_id:
         return tool_response(msg="缺少 relation_id，无法删除人物关系", success=False)
+    driver = None
     try:
         # 2.2 写入 Neo4j（本地 Docker，基本不炸）
         driver = get_neo4j_driver()
@@ -113,3 +122,6 @@ def delete_relation(**kwargs) -> dict:
     except Exception as e:
         logger.error(f"删除人物关系失败: {str(e)}", exc_info=True)
         return tool_response(msg=f"删除人物关系失败: {str(e)}", success=False)
+    finally:
+        if driver is not None:
+            driver.close()

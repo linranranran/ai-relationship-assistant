@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button, Input, Loading, MessagePlugin } from 'tdesign-react'
 import { sendMessage } from '../api/chat'
+import { MAX_CHAT_MESSAGE_LENGTH, validateChatMessage } from '../validation/requests'
 
 export default function Chat() {
   const [messages, setMessages] = useState([])
@@ -18,8 +19,13 @@ export default function Chat() {
   }, [messages])
 
   const handleSend = async () => {
+    if (sending) return
+    const validation = validateChatMessage(input)
+    if (!validation.valid) {
+      MessagePlugin.warning(validation.error)
+      return
+    }
     const text = input.trim()
-    if (!text) return
 
     // 显示用户消息
     setMessages((prev) => [...prev, { role: 'user', content: text }])
@@ -109,12 +115,15 @@ export default function Chat() {
           onChange={setInput}
           onEnter={handleSend}
           placeholder="输入消息，按 Enter 发送..."
+          maxLength={MAX_CHAT_MESSAGE_LENGTH}
+          disabled={sending}
           style={{ flex: 1 }}
         />
         <Button
           theme="primary"
           onClick={handleSend}
           loading={sending}
+          disabled={sending}
         >
           发送
         </Button>

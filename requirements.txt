@@ -8,9 +8,10 @@ uvicorn[standard]==0.34.0
 python-multipart==0.0.19
 
 # --- LLM & Agent 编排 ---
-langchain==0.3.14
-langchain-openai==0.2.14
-langgraph==0.2.61
+# 当前 LLM 封装直接使用 OpenAI-compatible SDK，不安装 LangChain 高层 Agent。
+# 必须与 pyproject.toml 和兼容性测试中的审核版本保持一致。
+langgraph==1.2.12
+langgraph-checkpoint-sqlite==3.1.1
 openai==1.58.1
 
 # --- 数据库 ---

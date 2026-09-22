@@ -6,9 +6,13 @@ dependencies = [
     "fastapi==0.115.6",
     "uvicorn[standard]==0.34.0",
     "python-multipart==0.0.19",
-    "langchain==0.3.14",
-    "langchain-openai==0.2.14",
-    "langgraph==0.2.61",
+    # 业务层直接使用 OpenAI-compatible SDK；不依赖 LangChain 高层 Agent。
+    # 避免旧版 langchain 对 langchain-core<0.4 的限制阻塞 LangGraph 1.x。
+    # Agent V2 依赖 1.x 的 checkpoint、interrupt 和 Command resume 语义。
+    # 升级此版本时，必须先通过 tests/compat/test_langgraph_runtime.py。
+    "langgraph==1.2.12",
+    # 本地开发阶段使用 SQLite 保存可恢复的 Agent 中断状态。
+    "langgraph-checkpoint-sqlite==3.1.1",
     "openai==1.58.1",
     "neo4j==5.27.0",
     "chromadb==0.6.3",

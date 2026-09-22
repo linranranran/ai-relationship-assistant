@@ -33,6 +33,7 @@ def query_relation_path(**kwargs) -> dict:
     if not target_person_id:
         return tool_response(msg="缺少target_person_id，无法查询人物关系", success=False)
     max_depth = kwargs.get("max_depth" , 7)
+    neo4j_driver = None
     try:
         neo4j_driver = neo4j_client.get_neo4j_driver()
         relation_list = neo4j_client.get_relation_path(neo4j_driver , from_person_id , target_person_id , owner_id , max_depth)
@@ -40,6 +41,9 @@ def query_relation_path(**kwargs) -> dict:
     except Exception as e:
         logger.error(f"查询人物关系失败: {str(e)}", exc_info=True)
         return tool_response(msg=f"查询人物关系失败: {str(e)}", success=False)
+    finally:
+        if neo4j_driver is not None:
+            neo4j_driver.close()
 
 def get_person_detail(**kwargs) -> dict:
     """
@@ -62,6 +66,7 @@ def get_person_detail(**kwargs) -> dict:
     person_id = kwargs.get("person_id")
     if not person_id:
         return tool_response(msg="缺少target_person_id，无法查询人物关系", success=False)
+    neo4j_driver = None
     try:
         neo4j_driver = neo4j_client.get_neo4j_driver()
         relation_list = neo4j_client.get_person_detail(neo4j_driver, person_id , owner_id)
@@ -69,6 +74,9 @@ def get_person_detail(**kwargs) -> dict:
     except Exception as e:
         logger.error(f"查询人物关系失败: {str(e)}", exc_info=True)
         return tool_response(msg=f"查询人物关系失败: {str(e)}", success=False)
+    finally:
+        if neo4j_driver is not None:
+            neo4j_driver.close()
 
 
 def list_relations(**kwargs) -> dict:
@@ -90,6 +98,7 @@ def list_relations(**kwargs) -> dict:
     if not person_id:
         return tool_response(msg="缺少target_person_id，无法查询人物关系", success=False)
     relation_type = kwargs.get("relation_type")
+    neo4j_driver = None
     try:
         neo4j_driver = neo4j_client.get_neo4j_driver()
         result = neo4j_client.list_person_relations(neo4j_driver, person_id, owner_id, relation_type)
@@ -97,3 +106,6 @@ def list_relations(**kwargs) -> dict:
     except Exception as e:
         logger.error(f"查询人物关系失败: {str(e)}", exc_info=True)
         return tool_response(msg=f"查询人物关系失败: {str(e)}", success=False)
+    finally:
+        if neo4j_driver is not None:
+            neo4j_driver.close()

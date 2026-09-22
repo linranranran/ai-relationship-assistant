@@ -3,24 +3,11 @@
 # ==========================================================
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
-
 from backend.auth import authenticate_user, create_user_in_db, get_current_user
 from backend.db.neo4j_client import get_neo4j_driver
+from backend.models.schemas import LoginRequest, RegisterRequest
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
-
-
-# ── 请求体 ──
-
-class RegisterRequest(BaseModel):
-    phone_number: str = Field(..., min_length=11, max_length=11, description="手机号")
-    password: str = Field(..., min_length=6, max_length=64, description="密码")
-
-
-class LoginRequest(BaseModel):
-    phone_number: str = Field(..., min_length=11, max_length=11, description="手机号")
-    password: str = Field(..., description="密码")
 
 
 # ── 接口 ──
@@ -48,6 +35,7 @@ def login(body: LoginRequest):
             "message": "登录成功",
             "token": result["token"],
             "user_id": result["user_id"],
+            "phone": result["phone"],
         }
     except HTTPException:
         raise

@@ -92,7 +92,7 @@ def create_person(driver: Driver, properties: dict, owner_id: str) -> dict:
         return result.single()["person"]
 
 
-def update_person(driver: Driver, person_id: str, properties: dict) -> dict:
+def update_person(driver: Driver, person_id: str, properties: dict, owner_id: str) -> dict:
     """
     更新一个 Person 节点的属性。只更新传入的字段。
 
@@ -107,32 +107,35 @@ def update_person(driver: Driver, person_id: str, properties: dict) -> dict:
     Raises:
         ValueError: 人物不存在
     """
+    check = get_person_detail(driver, person_id, owner_id)
+    if check is None:
+        raise ValueError(f"人物不存在或无权修改: {person_id}")
+
+    allowed_properties = {
+        key: value for key, value in properties.items() if key in ALLOWED_FIELDS_CN
+    }
+    if not allowed_properties:
+        return check["person"]
+
+    params = {**allowed_properties, "id": person_id, "owner_id": owner_id}
+    set_str = build_update_cql(allowed_properties)
     with driver.session() as session:
-        check = get_person_detail(driver , person_id)
-        if check is None:
-            raise ValueError(f"update_person — 未找到指定用户,id={person_id}")
-        else:
-            # 2. 只更新传入的字段，构建动态 SET 子句
-            if not properties:
-                return check
-
-            params = dict(properties)
-            params["id"] = person_id
-
-            # 3. 执行更新
-            set_str = build_update_cql(properties)
-            result = session.run(
-                f"""
-                        MATCH (p:Person {{id: $id}})
-                        SET {set_str}
-                        RETURN p {{{COMMON_PERSON_RETURN_FIELD_NAME}}} AS person
-                        """,
-                **params,
-            )
-            return result.single()["person"]
+        result = session.run(
+            f"""
+            MATCH (p:Person {{id: $id}})
+            WHERE p.owner_id = $owner_id
+            SET {set_str}
+            RETURN p {{{COMMON_PERSON_RETURN_FIELD_NAME}}} AS person
+            """,
+            **params,
+        )
+        record = result.single()
+        if record is None:
+            raise ValueError(f"人物不存在或无权修改: {person_id}")
+        return record["person"]
 
 
-def delete_person(driver: Driver, person_id: str) -> bool:
+def delete_person(driver: Driver, person_id: str, owner_id: str) -> bool:
     """
     删除一个人物节点及其所有关系。
 
@@ -146,17 +149,25 @@ def delete_person(driver: Driver, person_id: str) -> bool:
     Raises:
         ValueError: 人物不存在
     """
-    check = get_person_detail(driver , person_id)
+    check = get_person_detail(driver, person_id, owner_id)
     if check is None:
         raise ValueError(f"delete_person — 未找到该用户,id={person_id}")
+    if check["person"].get("is_self"):
+        raise ValueError("不能删除当前账号绑定的本人节点")
     else:
         with driver.session() as session:
             result = session.run(
-                f"""
-                    MATCH (p:Person {{id: $id}})
-                    DETACH DELETE p
-                    """
-            ,id = person_id)
+                """
+                MATCH (p:Person {id: $id, owner_id: $owner_id})
+                DETACH DELETE p
+                RETURN count(p) AS deleted
+                """,
+                id=person_id,
+                owner_id=owner_id,
+            )
+            record = result.single()
+            if record is not None and record.get("deleted", 1) == 0:
+                raise ValueError(f"人物不存在或无权删除: {person_id}")
             return True
 
 
@@ -213,18 +224,15 @@ def find_person_fuzzy(driver: Driver, query: str, owner_id: str, limit: int = 5)
         result = session.run(
             f"""
             MATCH (p:Person)
-            WHERE p.name STARTS WITH $search_term and p.owner_id = $owner_id
-            RETURN p {{{COMMON_PERSON_RETURN_FIELD_NAME}}} AS person LIMIT {limit}
+            WHERE p.name CONTAINS $search_term AND p.owner_id = $owner_id
+            RETURN p {{{COMMON_PERSON_RETURN_FIELD_NAME}}} AS person
+            ORDER BY p.name
+            LIMIT $limit
             """,
             search_term = query,
             owner_id = owner_id,
             limit = limit)
-        result_data = result.single()
-        if result_data is None:
-            return None
-        else:
-            return result_data
-    raise NotImplementedError("find_person_fuzzy — 等你来实现 ✍️")
+        return [record["person"] for record in result]
 
 
 def add_relation(
@@ -263,11 +271,11 @@ def add_relation(
     #        through: $through, note: $note, created_at: datetime()
     #    }]->(b)
     #    RETURN ...
-    from_person = get_person_detail(driver , from_person_id)
+    from_person = get_person_detail(driver, from_person_id, owner_id)
     if from_person is None:
         raise ValueError(f"add_relation — 未找到指定用户,id={from_person_id}")
 
-    to_person = get_person_detail(driver, to_person_id)
+    to_person = get_person_detail(driver, to_person_id, owner_id)
     if to_person is None:
         raise ValueError(f"add_relation — 未找到指定用户,id={to_person_id}")
 
@@ -275,8 +283,8 @@ def add_relation(
     with driver.session() as session:
         rel_id = "r_" +generate_uuid()
         result = session.run("""
-            MATCH(a:Person
-            {id: $from_person_id}), (b:Person {id: $to_person_id})
+            MATCH (a:Person {id: $from_person_id, owner_id: $owner_id}),
+                  (b:Person {id: $to_person_id, owner_id: $owner_id})
             CREATE (a)-[:RELATION {
                id: $rel_id, type: $type, owner: $owner_id,
                through: $through, note: $note, created_at: datetime()
@@ -299,8 +307,10 @@ def delete_relation(driver: Driver, relation_id: str, owner_id: str) -> bool:
     with driver.session() as session:
         # 删除一条关系边（仅限自己的数据）
         result = session.run(
-            """MATCH ()-[r:RELATION {id: $id}]->()
+            """MATCH (a:Person)-[r:RELATION {id: $id}]->(b:Person)
                WHERE r.owner = $owner_id
+                 AND a.owner_id = $owner_id
+                 AND b.owner_id = $owner_id
                DELETE r
                RETURN count(r) AS deleted""",
             id=relation_id,
@@ -315,25 +325,34 @@ def update_relation(driver: Driver,relation_id: str,new_type:str, owner_id: str 
     with driver.session() as session:
         # SET 也能改——type 只是一个普通属性，不是 Cypher 的关系类型。但你改了 type 之后，add_relation 里那份数据就跟它不一致了。
         result = session.run(
-            """MATCH() - [r: RELATION{id: $id}]->()
+            """MATCH (a:Person)-[r:RELATION {id: $id}]->(b:Person)
             WHERE r.owner = $owner_id
+              AND a.owner_id = $owner_id
+              AND b.owner_id = $owner_id
             SET
-            r.type = $new_type,r.note = $new_note, r.through = $new_through""" , id=relation_id, owner_id=owner_id,new_type=new_type,new_note = new_note,new_through=new_through)
+            r.type = $new_type, r.note = $new_note, r.through = $new_through
+            RETURN count(r) AS updated""" , id=relation_id, owner_id=owner_id,new_type=new_type,new_note = new_note,new_through=new_through)
+        if result.single()["updated"] == 0:
+            raise ValueError(f"关系不存在或无权修改: {relation_id}")
         return True
 
-def get_relation_by_id(driver: Driver, relation_id: str) -> dict | None:
+def get_relation_by_id(driver: Driver, relation_id: str, owner_id: str) -> dict | None:
     # 1. 查出旧边信息（拿到 from / to / 旧属性）
     with driver.session() as session:
         old = session.run(
             """MATCH (a:Person)-[r:RELATION {id: $rid}]->(b:Person)
+               WHERE r.owner = $owner_id
+                 AND a.owner_id = $owner_id
+                 AND b.owner_id = $owner_id
                RETURN a.id AS from_id, b.id AS to_id,
                       r.type AS type, r.owner AS owner,
                       r.through AS through, r.note AS note""",
             rid=relation_id,
+            owner_id=owner_id,
         ).single()
         if old is None:
             return None
-        return old.data()
+        return old.data() if hasattr(old, "data") else dict(old)
 
 
 def get_relation_path(
@@ -367,6 +386,7 @@ def get_relation_path(
             )
             WHERE a.owner_id = $owner_id
               AND b.owner_id = $owner_id
+              AND ALL(node IN nodes(path) WHERE node.owner_id = $owner_id)
               AND ALL(rel IN relationships(path) WHERE rel.owner = $owner_id)
             RETURN path
             """,
@@ -419,7 +439,7 @@ def get_person_detail(driver: Driver, person_id: str,owner_id: str) -> dict | No
             MATCH (p:Person {id: $person_id})
             WHERE p.owner_id = $owner_id
             OPTIONAL MATCH (p)-[r:RELATION]-(other:Person)
-            WHERE r.owner = $owner_id
+            WHERE r.owner = $owner_id AND other.owner_id = $owner_id
             RETURN p {.*} AS person,
                [rel IN collect(DISTINCT {
                    relation_id: r.id, type: r.type, note: r.note,
@@ -451,16 +471,20 @@ def list_person_relations(
     if relation_type:
         cypher = """
                 MATCH (p:Person {id: $id})-[r:RELATION {type: $type}]-(other:Person)
-                WHERE r.owner = $owner_id
+                WHERE p.owner_id = $owner_id
+                  AND other.owner_id = $owner_id
+                  AND r.owner = $owner_id
                 RETURN r.id AS relation_id, r.type AS type,
                        other.name AS person_name, other.id AS person_id,
                        r.note AS note
             """
-        params = {"id": person_id, "type": relation_type}
+        params = {"id": person_id, "type": relation_type, "owner_id": owner_id}
     else:
         cypher = """
                 MATCH (p:Person {id: $id})-[r:RELATION]-(other:Person)
-                WHERE r.owner = $owner_id
+                WHERE p.owner_id = $owner_id
+                  AND other.owner_id = $owner_id
+                  AND r.owner = $owner_id
                 RETURN r.id AS relation_id, r.type AS type,
                        other.name AS person_name, other.id AS person_id,
                        r.note AS note
@@ -472,9 +496,9 @@ def list_person_relations(
         return result.data()  # data() 返回所有行，每行是一个 dict
 
 
-def person_exists(driver: Driver, person_id: str) -> bool:
+def person_exists(driver: Driver, person_id: str, owner_id: str) -> bool:
     """检查人物是否存在。"""
-    return get_person_detail(driver, person_id) is not None
+    return get_person_detail(driver, person_id, owner_id) is not None
 
 if __name__ == "__main__":
     driver = get_neo4j_driver()

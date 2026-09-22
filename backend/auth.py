@@ -65,10 +65,15 @@ async def get_current_user(
         user = _get_user_from_db(driver, user_id)
         if user is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+        user = _ensure_self_person(driver, user)
     finally:
         driver.close()
 
-    return {"user_id": user["user_id"], "phone": user["phone"]}
+    return {
+        "user_id": user["user_id"],
+        "phone": user["phone"],
+        "self_person_id": user["self_person_id"],
+    }
 
 
 # ==========================================================
@@ -79,7 +84,10 @@ def _find_user_by_phone(driver, phone: str) -> dict | None:
     records, _, _ = driver.execute_query(
         """
         MATCH (u:User {phone_number: $phone})
-        RETURN u.user_id AS user_id, u.phone_number AS phone, u.hashed_password AS hashed_password
+        OPTIONAL MATCH (u)-[:HAS_IDENTITY]->(p:Person)
+        RETURN u.user_id AS user_id, u.phone_number AS phone,
+               u.hashed_password AS hashed_password,
+               coalesce(u.self_person_id, p.id) AS self_person_id
         """,
         {"phone": phone},
     )
@@ -90,32 +98,82 @@ def _get_user_from_db(driver, user_id: str) -> dict | None:
     records, _, _ = driver.execute_query(
         """
         MATCH (u:User {user_id: $user_id})
-        RETURN u.user_id AS user_id, u.phone_number AS phone
+        OPTIONAL MATCH (u)-[:HAS_IDENTITY]->(p:Person)
+        RETURN u.user_id AS user_id, u.phone_number AS phone,
+               coalesce(u.self_person_id, p.id) AS self_person_id
         """,
         {"user_id": user_id},
     )
     return records[0] if records else None
 
 
+def _ensure_self_person(driver, user: dict) -> dict:
+    """为旧账号补齐唯一的“本人 Person”绑定。"""
+    if user.get("self_person_id"):
+        return user
+
+    self_person_id = "p_" + uuid.uuid4().hex[:8]
+    records, _, _ = driver.execute_query(
+        """
+        MATCH (u:User {user_id: $user_id})
+        CREATE (p:Person {
+            id: $self_person_id,
+            owner_id: $owner_id,
+            name: '我',
+            gender: '未知',
+            hobbies: [],
+            tags: [],
+            is_self: true,
+            created_at: datetime()
+        })
+        SET u.self_person_id = $self_person_id
+        CREATE (u)-[:HAS_IDENTITY]->(p)
+        RETURN u.user_id AS user_id, u.phone_number AS phone,
+               p.id AS self_person_id
+        """,
+        {
+            "user_id": user["user_id"],
+            "owner_id": user["user_id"],
+            "self_person_id": self_person_id,
+        },
+    )
+    return records[0]
+
+
 def create_user_in_db(driver, phone: str, password: str) -> dict:
-    """在 Neo4j 中创建 :User 节点。phone_number 全局唯一。返回 {user_id, phone}。"""
+    """原子创建账号、该账号私有图中的“本人 Person”及二者绑定。"""
     existing = _find_user_by_phone(driver, phone)
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="手机号已注册")
 
     user_id = str(uuid.uuid4())
+    self_person_id = "p_" + uuid.uuid4().hex[:8]
     hashed = hash_password(password)
     now = datetime.now(timezone.utc).isoformat()
 
-    driver.execute_query(
+    records, _, _ = driver.execute_query(
         """
         CREATE (u:User {
             user_id: $user_id,
             phone_number: $phone,
             hashed_password: $hashed_password,
             phone_numbers: $phone_numbers,
-            created_at: $created_at
+            created_at: $created_at,
+            self_person_id: $self_person_id
         })
+        CREATE (p:Person {
+            id: $self_person_id,
+            owner_id: $owner_id,
+            name: '我',
+            gender: '未知',
+            hobbies: [],
+            tags: [],
+            is_self: true,
+            created_at: datetime()
+        })
+        CREATE (u)-[:HAS_IDENTITY]->(p)
+        RETURN u.user_id AS user_id, u.phone_number AS phone,
+               p.id AS self_person_id
         """,
         {
             "user_id": user_id,
@@ -123,10 +181,16 @@ def create_user_in_db(driver, phone: str, password: str) -> dict:
             "hashed_password": hashed,
             "phone_numbers": [phone],
             "created_at": now,
+            "self_person_id": self_person_id,
+            "owner_id": user_id,
         },
     )
 
-    return {"user_id": user_id, "phone": phone}
+    return records[0] if records else {
+        "user_id": user_id,
+        "phone": phone,
+        "self_person_id": self_person_id,
+    }
 
 
 def authenticate_user(driver, phone: str, password: str) -> dict:
@@ -135,5 +199,11 @@ def authenticate_user(driver, phone: str, password: str) -> dict:
     if not user or not verify_password(password, user["hashed_password"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="手机号或密码错误")
 
+    user = _ensure_self_person(driver, user)
     token = create_token(user["user_id"], user["phone"])
-    return {"user_id": user["user_id"], "phone": user["phone"], "token": token}
+    return {
+        "user_id": user["user_id"],
+        "phone": user["phone"],
+        "self_person_id": user["self_person_id"],
+        "token": token,
+    }

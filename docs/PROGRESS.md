@@ -271,6 +271,25 @@ def my_node(state):
 
 ## 历史记录
 
+### 2026-09-21
+
+- ✅ **LangGraph Agent 全部跑通**，端到端对话可用
+- ✅ 修复 `Command.update` 重复写入导致的 `InvalidUpdateError`
+  - 根因：LangGraph `LastValue` channel 同一 step 只能写入一次
+  - 所有节点改为只传变更字段：`Command(update={"intent": ..., "intent_confidence": ...}, goto=...)`
+  - 终端节点（generate_response / ask_clarification）改为 `return {"response": ...}`，不再返回完整 state
+  - 移除所有 `add_edge()` 默认边——与 Command goto 同时生效导致并行执行
+- ✅ 初期 state 补全所有 TypedDict 字段（`tool_calls`、`extracted_info` 等），避免 KeyError
+- ✅ 前端登录跳转修复
+  - 根因：React 19 (`ReactDOM.render` 已移除) 与 TDesign 1.18 不兼容
+  - React 19.2 → 18.3，react-router-dom 7 → 6
+  - `tdesign-icons-react` 图标库移除，替换为 emoji/纯文字
+  - `navigate('/chat')` → `window.location.href` 跳过 React Router
+- ✅ `passlib` 替换为原生 `bcrypt`（passlib 1.7.4 不兼容 bcrypt 4.x）
+- ✅ Langfuse 接入：`langfuse.langchain.CallbackHandler` 挂到 `agent_graph.invoke()`
+- ✅ 超时配置：OpenAI client `timeout=300.0`，`recursion_limit=50`
+- 踩坑：`Command(update=state)` 传整个 state 是大忌、React 版本和 UI 库兼容性、LangGraph 默认边和 Command 并行
+
 ### 2026-09-14
 
 - ✅ 接入 registry：person.py 4 个 + relation.py 3 个 = 7 个 Tool 全部入册

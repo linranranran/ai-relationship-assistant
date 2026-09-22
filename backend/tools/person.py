@@ -49,6 +49,7 @@ def add_person(**kwargs) -> dict:
 
     # ── 第 2 层：按“最易炸 → 最稳定”的顺序编排 ──
     person_id = None  # 用于回滚
+    driver = None
 
     try:
         # 2.1 生成 embedding（外部 API，最可能炸）
@@ -79,7 +80,7 @@ def add_person(**kwargs) -> dict:
         # ── 补偿回滚：清理已写入的脏数据 ──
         if person_id:
             try:
-                neo4j_client.delete_person(driver, person_id)
+                neo4j_client.delete_person(driver, person_id, owner_id)
             except Exception:
                 # 回滚失败也要继续抛原始错误
                 msg = f"创建人物失败,失败原因:{str(e)},但已生成人物id: {person_id},需要根据人物id回滚删除用户"
@@ -87,6 +88,9 @@ def add_person(**kwargs) -> dict:
                 return tool_response(msg=msg, success=False)
         logger.error(f"创建人物失败: {str(e)}", exc_info=True)
         return tool_response(msg=f"创建人物失败: {str(e)}", success=False)
+    finally:
+        if driver is not None:
+            driver.close()
 
 
 def update_person(**kwargs) -> dict:
@@ -125,6 +129,7 @@ def update_person(**kwargs) -> dict:
     person_id = kwargs.get("person_id")
     if not person_id:
         return tool_response(msg="缺少 person_id，无法更新人物信息", success=False)
+    driver = None
     try:
         need_reindex = any(f in kwargs for f in EMBEDDING_FIELDS)
         # 2.0 需要先查询老数据，在老数据的基础上新增、修改新的数据
@@ -133,7 +138,7 @@ def update_person(**kwargs) -> dict:
             if key in neo4j_client.ALLOWED_FIELDS_CN:
                 param[key] = value
         driver = get_neo4j_driver()
-        current_person = neo4j_client.get_person_detail(driver, person_id)
+        current_person = neo4j_client.get_person_detail(driver, person_id, owner_id)
         if not current_person:
             return tool_response(msg="未获取到人物信息", success=False)
         # 2.0 合并：旧数据打底，新数据覆盖
@@ -146,7 +151,7 @@ def update_person(**kwargs) -> dict:
             embedding = embed_text(emb_client, person_text)
 
         # 2.2 更新 Neo4j（本地 Docker，基本不炸）
-        person = neo4j_client.update_person(driver, person_id, param)
+        person = neo4j_client.update_person(driver, person_id, param, owner_id)
 
         if need_reindex:
             # 2.3 更新 ChromaDB（本地文件，基本不炸）
@@ -165,6 +170,9 @@ def update_person(**kwargs) -> dict:
     except Exception as e:
         logger.error(f"更新人物失败: {str(e)}", exc_info=True)
         return tool_response(msg=f"更新人物失败: {str(e)}", success=False)
+    finally:
+        if driver is not None:
+            driver.close()
 
 
 def delete_person(**kwargs) -> dict:
@@ -185,24 +193,35 @@ def delete_person(**kwargs) -> dict:
     # 2. 调用 backend.db.neo4j_client.delete_person()
     # 3. 调用 backend.db.chroma_client.delete_person_embedding()
     confirmed = kwargs.get("confirmed")
-    if not confirmed:
-        return tool_response(msg="需要用户手动确认是否删除人物", success=False)
+    if confirmed is not True:
+        return {
+            **tool_response(msg="需要用户手动确认是否删除人物", success=False),
+            "needs_confirmation": True,
+        }
 
     person_id = kwargs.get("person_id")
     if not person_id:
         return tool_response(msg="缺少 person_id，无法删除人物信息", success=False)
 
+    owner_id = kwargs.get("owner_id")
+    if not owner_id:
+        return tool_response(msg="缺少 owner_id，无法确定数据归属", success=False)
+
+    neo4j_driver = None
     try:
         neo4j_driver = get_neo4j_driver()
-        neo4j_delete_flag = neo4j_client.delete_person(neo4j_driver, person_id)
+        neo4j_delete_flag = neo4j_client.delete_person(neo4j_driver, person_id, owner_id)
         chroma_cli = get_chroma_client()
         collection = get_person_collection(chroma_cli)
-        chroma_delete_flag = chroma_client.delete_person_embedding(collection, person_id)
+        chroma_delete_flag = chroma_client.delete_person_embedding(collection, person_id, owner_id)
 
         return tool_response(msg="删除成功", success=True)
     except Exception as e:
         logger.error(f"删除人物失败: {str(e)}", exc_info=True)
         return tool_response(msg=f"删除人物失败: {str(e)}", success=False)
+    finally:
+        if neo4j_driver is not None:
+            neo4j_driver.close()
 
 
 def find_person(**kwargs) -> dict:
@@ -255,6 +274,7 @@ def find_person(**kwargs) -> dict:
     if not owner_id:
         return tool_response(msg="缺少owner_id参数，无法查询", success=False)
 
+    neo4j_driver = None
     try:
         neo4j_driver = get_neo4j_driver()
         if mode == "exact":
@@ -274,3 +294,6 @@ def find_person(**kwargs) -> dict:
         msg = f"查询人物失败: {str(e)}"
         logger.error(msg, exc_info=True)
         return tool_response(msg=msg, success=False)
+    finally:
+        if neo4j_driver is not None:
+            neo4j_driver.close()

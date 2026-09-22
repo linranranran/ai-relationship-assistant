@@ -116,10 +116,12 @@ def semantic_search_person(
     return persons
 
 
-def delete_person_embedding(collection: chromadb.Collection, person_id: str) -> bool:
+def delete_person_embedding(
+    collection: chromadb.Collection, person_id: str, owner_id: str
+) -> bool:
     """删除一个人物的向量。"""
     # TO-DO: 实现
-    collection.delete(ids=[person_id])
+    collection.delete(ids=[person_id], where={"owner_id": owner_id})
     return True
 
 
@@ -208,4 +210,4 @@ if __name__ == "__main__":
     # print(semantic_search_person(collection, text_embedding, owner_id="1"))
 
     collection = get_person_collection(get_chroma_client())
-    print( delete_person_embedding(collection , person_id = "p_e2997a7d1") )
+    print(delete_person_embedding(collection, person_id="p_e2997a7d1", owner_id="1"))

@@ -9,6 +9,8 @@ class AgentState(TypedDict):
     # === 输入 ===
     user_input: str                    # 用户原始输入
     user_id: str                       # 当前用户 ID
+    self_person_id: str                # 当前用户私有关系图中的“本人”节点 ID
+    request_id: str                    # 本次请求链路 ID
     user_name: str                     # 当前用户姓名
     history: List[dict]                # 最近对话历史
 

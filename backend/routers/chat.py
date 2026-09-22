@@ -3,8 +3,10 @@
 # 前端通过这个接口和 Agent 交互
 # ============================================================
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends
+from backend.auth import get_current_user
 from backend.models.schemas import ChatRequest, ChatResponse
+from backend.models.context import RequestContext
 from backend.agent.state import AgentState
 from backend.agent.graph import agent_graph
 
@@ -12,7 +14,10 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 @router.post("", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(
+    request: ChatRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """
     主对话接口。
 
@@ -21,9 +26,6 @@ async def chat(request: ChatRequest):
     Request:
         {
             "message": "今天见的张三，李四的朋友，做金融的",
-            "user_id": "user_001",
-            "user_name": "小明",
-            "history": []
         }
 
     Response:
@@ -58,12 +60,15 @@ async def chat(request: ChatRequest):
     #     tool_calls=[tc["tool"] for tc in final_state.get("tool_calls", [])]
     # )
 
-    # TODO history竟然需要前端传值？后续优化使用checkpoint、story持久化
+    context = RequestContext.from_current_user(current_user)
     initial_state = AgentState(
         user_input=request.message,
-        user_id=request.user_id,
-        user_name=request.user_name,
-        history=request.history,
+        user_id=context.owner_id,
+        self_person_id=context.self_person_id,
+        request_id=context.request_id,
+        user_name=context.user_name,
+        # 对话历史应由你的 Agent checkpoint 按 owner/thread 从服务端恢复。
+        history=[],
         intent="",
         intent_confidence=0.0,
         extracted_info={},

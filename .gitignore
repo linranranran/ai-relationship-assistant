@@ -31,3 +31,6 @@ neo4j_logs/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+
+# 本地设计会话
+.superpowers/
