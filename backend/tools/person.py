@@ -37,6 +37,9 @@ def add_person(**kwargs) -> dict:
     owner_id = kwargs.get("owner_id")
     if not owner_id:
         return tool_response(msg="缺少 owner_id，无法确定数据归属", success=False)
+    idempotency_key = kwargs.get("idempotency_key")
+    if not idempotency_key:
+        return tool_response(msg="缺少服务端幂等键，无法安全创建人物", success=False)
 
     # 只取允许存入的字段
     param = {}
@@ -49,6 +52,7 @@ def add_person(**kwargs) -> dict:
 
     # ── 第 2 层：按“最易炸 → 最稳定”的顺序编排 ──
     person_id = None  # 用于回滚
+    created_by_current_attempt = False
     driver = None
 
     try:
@@ -59,8 +63,17 @@ def add_person(**kwargs) -> dict:
 
         # 2.2 写入 Neo4j（本地 Docker，基本不炸）
         driver = get_neo4j_driver()
-        person = neo4j_client.create_person(driver, param, owner_id)
+        person = neo4j_client.create_person(
+            driver,
+            param,
+            owner_id,
+            idempotency_key,
+        )
         person_id = person["id"]
+        created_by_current_attempt = person.pop(
+            "_created_by_current_attempt",
+            False,
+        )
 
         # 2.3 写入 ChromaDB（本地文件，基本不炸）
         chroma_cli = get_chroma_client()
@@ -78,7 +91,8 @@ def add_person(**kwargs) -> dict:
 
     except Exception as e:
         # ── 补偿回滚：清理已写入的脏数据 ──
-        if person_id:
+        # 重试命中历史人物时绝不能删除它；只有本次新建的节点才允许补偿。
+        if person_id and created_by_current_attempt:
             try:
                 neo4j_client.delete_person(driver, person_id, owner_id)
             except Exception:
@@ -297,3 +311,19 @@ def find_person(**kwargs) -> dict:
     finally:
         if neo4j_driver is not None:
             neo4j_driver.close()
+
+if __name__ == "__main__":
+    result1 = add_person(
+        name="张三",
+        owner_id="user_1",
+        idempotency_key="user_1:call_a1",
+    )
+
+    result2 = add_person(
+        name="张三",
+        owner_id="user_1",
+        idempotency_key="user_1:call_a1",
+    )
+
+    print(result1)
+    print(result2)

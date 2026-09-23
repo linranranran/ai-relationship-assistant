@@ -20,6 +20,10 @@ from backend.tools.registry import TOOL_ARGUMENT_MODELS, execute_tool
 
 logger = logging.getLogger(__name__)
 
+# 第一阶段只为新增人物接入业务数据库幂等。后续 add_relation 跑通同样的
+# 约束和 MERGE 语义后，再加入这个集合。
+BUSINESS_IDEMPOTENT_TOOLS = frozenset({"add_person"})
+
 
 def _successful_results_by_step(records: list[dict]) -> dict[str, dict]:
     """从可持久化的执行记录恢复引用索引，支持 interrupt 后继续执行。"""
@@ -126,6 +130,12 @@ def execute_tools(state: AgentState) -> Command:
 
         runtime_args = dict(resolved_args)
         runtime_args["owner_id"] = state["user_id"]
+        if call["tool"] in BUSINESS_IDEMPOTENT_TOOLS:
+            # 只能由服务端注入。owner_id 作为前缀，即使两个用户意外提交了
+            # 相同 call_id，也不会在业务数据库中互相命中。
+            runtime_args["idempotency_key"] = (
+                f"{state['user_id']}:{call['call_id']}"
+            )
         if call["tool"] == "query_relation_path":
             runtime_args["from_person_id"] = state["self_person_id"]
 

@@ -70,6 +70,12 @@ def claim_execution(
     ):
         raise RuntimeError("call_id 已被其他 request、Tool 或 thread 使用")
 
+    stored_arguments = record.get("arguments")
+    if not isinstance(stored_arguments, dict):
+        raise RuntimeError("Tool 幂等记录缺少合法 arguments")
+    if stored_arguments != arguments:
+        raise RuntimeError("相同 call_id 的 Tool 参数发生变化，拒绝重复执行")
+
     status = record.get("status")
     if status == ToolExecutionStatus.SUCCESS:
         result = record.get("result")

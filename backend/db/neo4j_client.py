@@ -51,7 +51,12 @@ def get_neo4j_driver() -> Driver:
 # 每个函数签名+docstring 已经写好，你只需要实现函数体
 # ============================================================
 
-def create_person(driver: Driver, properties: dict, owner_id: str) -> dict:
+def create_person(
+    driver: Driver,
+    properties: dict,
+    owner_id: str,
+    idempotency_key: str,
+) -> dict:
     """
     在 Neo4j 中创建一个 Person 节点。
 
@@ -60,21 +65,41 @@ def create_person(driver: Driver, properties: dict, owner_id: str) -> dict:
         properties: 人物属性 dict，包含 name, gender, birth_year, occupation,
                     education, hobbies, personality, tags, note 等
         owner_id: 创建者用户 ID
+        idempotency_key: 服务端生成的业务幂等键，同一次 Tool 重试必须相同
 
     Returns:
         {"person_id": "p_xxx", "name": "张三", ...}
 
     Example:
-        create_person(driver, {"name": "张三", "occupation": "金融"}, "user_1")
+        create_person(
+            driver,
+            {"name": "张三", "occupation": "金融"},
+            "user_1",
+            "user_1:call_xxx",
+        )
         {"person_id": "p_089", "name": "张三", "occupation": "金融", ...}
     """
+    if not idempotency_key:
+        raise ValueError("create_person — 缺少 idempotency_key")
+
     with driver.session() as session:
         person_id = common_tool.generate_prefix_uuid("p_")
+        create_properties = ",\n".join(
+            f"p.{field} = ${field}" for field in ALLOWED_FIELDS_CN.keys()
+        )
         result = session.run(
             f"""
-            CREATE ( p:Person {{{COMMON_PERSON_FIELD_NAME}}})
+            MERGE (p:Person {{created_by_operation: $idempotency_key}})
+            ON CREATE SET
+                p.id = $id,
+                p.owner_id = $owner_id,
+                p.created_at = datetime(),
+                {create_properties}
+            WITH p
+            WHERE p.owner_id = $owner_id
             RETURN p {{{COMMON_PERSON_RETURN_FIELD_NAME}}} AS person""",
             id=person_id,
+            idempotency_key=idempotency_key,
             name=properties.get("name", ""),
             gender=properties.get("gender", "未知"),
             birth_year=properties.get("birth_year"),
@@ -86,7 +111,13 @@ def create_person(driver: Driver, properties: dict, owner_id: str) -> dict:
             note=properties.get("note"),
             owner_id=owner_id,
         )
-        return result.single()["person"]
+        record = result.single()
+        if record is None:
+            raise ValueError("幂等键已被其他用户占用")
+        person = dict(record["person"])
+        # 仅供 Tool 内部决定异常时能否回滚，不能作为业务字段写回 Neo4j。
+        person["_created_by_current_attempt"] = person.get("id") == person_id
+        return person
 
 
 def update_person(driver: Driver, person_id: str, properties: dict, owner_id: str) -> dict:
