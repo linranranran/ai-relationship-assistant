@@ -24,17 +24,19 @@ MODEL_FORBIDDEN_ARGUMENTS = frozenset(
     {"owner_id", "user_id", "self_person_id", "confirmed", "idempotency_key"}
 )
 
-def sanitize_model_tool_calls(raw_tool_calls: Any) -> list[dict]:
+def sanitize_model_tool_calls(raw_tool_calls: Any, request_id: str) -> list[dict]:
     """清洗模型产生的 Tool 计划。
 
     1. 按 Tool 定义校验必填参数和参数类型；
     2. 拒绝未知 Tool；
-    3. 为每个调用生成 call_id，供审计和幂等控制使用。
+    3. 使用 request_id 和步骤下标生成稳定 call_id，供重放和幂等控制使用。
 
     当前骨架先完成最关键的权限隔离：模型不能伪造 owner_id 和 confirmed。
     """
     if not isinstance(raw_tool_calls, list):
         return []
+    if not request_id:
+        raise ToolPlanValidationError("缺少 request_id，无法生成稳定 call_id")
 
     sanitized: list[dict] = []
     known_step_ids: set[str] = set()
@@ -76,8 +78,13 @@ def sanitize_model_tool_calls(raw_tool_calls: Any) -> list[dict]:
             # 3.1 如果校验失败，把错误信息回传给 LLM，让它修正
             print(f"参数校验失败：tool_name={tool_name}, tool_args={safe_args}")
             raise ToolPlanValidationError(f"{tool_name} 参数校验失败：{e}")
-        # 4、生成call_id
-        call_id = common_tool.generate_prefix_uuid("call_")
+        # 同一个 request_id 重新规划时，步骤下标对应同一个 call_id。
+        # 如果模型把同一下标换成另一个 Tool，执行仓储会拒绝复用该 call_id，
+        # 从而选择安全失败，而不是重复产生业务副作用。
+        call_id = common_tool.generate_deterministic_prefix_uuid(
+            "call_",
+            f"agent-request:{request_id}:step:{index}",
+        )
         sanitized.append(
             {
                 "step_id": step_id,

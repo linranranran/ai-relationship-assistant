@@ -1,7 +1,6 @@
-"""Trusted request identity passed from HTTP authentication to the Agent layer."""
+"""HTTP 鉴权信息和已校验的 request_id 组成的 Agent 请求上下文。"""
 
 from dataclasses import dataclass
-from uuid import uuid4
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,10 +11,14 @@ class RequestContext:
     request_id: str
 
     @classmethod
-    def from_current_user(cls, current_user: dict) -> "RequestContext":
+    def from_current_user(
+        cls,
+        current_user: dict,
+        request_id: str,
+    ) -> "RequestContext":
         return cls(
             owner_id=current_user["user_id"],
             self_person_id=current_user["self_person_id"],
             user_name=current_user.get("phone") or "我",
-            request_id=str(uuid4()),
+            request_id=request_id,
         )

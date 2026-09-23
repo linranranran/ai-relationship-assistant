@@ -35,7 +35,10 @@ def plan_tasks(state: AgentState) -> Command:
 
         # 模型负责“提出计划”，但无权决定自己是否已经获得用户授权。
         # 所以这里忽略模型返回的 needs_confirmation / confirmed，统一由代码判断。
-        tool_calls = sanitize_model_tool_calls(response.get("tool_calls", []))
+        tool_calls = sanitize_model_tool_calls(
+            response.get("tool_calls", []),
+            request_id=state["request_id"],
+        )
 
         # 高风险判断移到 execute_tools：先执行安全查询并解析出真实 ID，
         # 再生成准确的确认摘要并 interrupt。

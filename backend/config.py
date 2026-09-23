@@ -43,6 +43,13 @@ NEO4J_URI = _get("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = _get("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = _get("NEO4J_PASSWORD", "password")
 
+# --- Mysql ---
+MYSQL_HOST = _get("MYSQL_HOST", _get("MYSQL_URI", "localhost"))
+MYSQL_PORT = _get_int("MYSQL_PORT", 3306)
+MYSQL_USER = _get("MYSQL_USER", "mysql")
+MYSQL_PASSWORD = _get("MYSQL_PASSWORD", "mysql")
+MYSQL_DATABASE = _get("MYSQL_DATABASE", "relation_agent")
+
 # --- ChromaDB ---
 CHROMA_PERSIST_DIR = _get("CHROMA_PERSIST_DIR", "./chroma_data")
 

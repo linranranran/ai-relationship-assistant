@@ -67,10 +67,11 @@ class ConfirmationPrompt(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    request_id: str = Field(description="本次请求的幂等键，重试和查询必须复用")
     response: str = Field(description="Agent 的回复")
     intent: Optional[str] = Field(default=None, description="识别的意图")
     tool_calls: Optional[list[str]] = Field(default=None, description="执行的 Tool 列表")
-    status: Literal["COMPLETED", "CONFIRMATION_REQUIRED"] = "COMPLETED"
+    status: Literal["RUNNING", "COMPLETED", "CONFIRMATION_REQUIRED", "FAILED"] = "COMPLETED"
     confirmation: Optional[ConfirmationPrompt] = None
 
 
