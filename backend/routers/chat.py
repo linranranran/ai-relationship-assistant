@@ -14,6 +14,7 @@ from backend.auth import get_current_user
 from backend.models.schemas import (
     ChatRequest,
     ChatResponse,
+    ClarificationPrompt,
     ConfirmationPrompt,
     ResumeAgentRequest,
 )
@@ -55,27 +56,40 @@ def _extract_interrupt(result: dict) -> dict | None:
     return {**value, "interrupt_id": interrupt_id}
 
 
-def _pending_interrupt_ids(snapshot) -> set[str]:
-    """读取当前检查点里所有待恢复的 LangGraph interrupt_id。"""
+def _pending_interrupt_payloads(snapshot) -> dict[str, dict]:
+    """按 interrupt_id 索引当前等待中的结构化交互 payload。"""
     return {
-        interrupt.id
+        interrupt.id: interrupt.value
         for task in (snapshot.tasks or ())
         for interrupt in (getattr(task, "interrupts", ()) or ())
         if isinstance(getattr(interrupt, "id", None), str)
+        and isinstance(getattr(interrupt, "value", None), dict)
     }
 
 
 def _to_chat_response(final_state: dict) -> ChatResponse:
     """把普通完成状态和暂停状态统一转换成 HTTP 响应。"""
-    confirmation = _extract_interrupt(final_state)
+    interaction = _extract_interrupt(final_state)
     tool_names = [
         item.get("tool", "")
         for item in final_state.get("tool_calls", [])
         if isinstance(item, dict)
     ]
 
-    if confirmation:
-        prompt = ConfirmationPrompt.model_validate(confirmation)
+    if interaction and interaction.get("interaction_type") == "CLARIFICATION":
+        prompt = ClarificationPrompt.model_validate(interaction)
+        return ChatResponse(
+            request_id=final_state["request_id"],
+            response=prompt.question,
+            intent=final_state.get("intent"),
+            tool_calls=tool_names,
+            status="CLARIFICATION_REQUIRED",
+            clarification=prompt,
+        )
+
+    if interaction:
+        # 兼容旧检查点：没有 interaction_type 的历史 interrupt 仍按确认处理。
+        prompt = ConfirmationPrompt.model_validate(interaction)
         return ChatResponse(
             request_id=final_state["request_id"],
             response=f"{prompt.summary}。是否继续？",
@@ -83,6 +97,15 @@ def _to_chat_response(final_state: dict) -> ChatResponse:
             tool_calls=tool_names,
             status="CONFIRMATION_REQUIRED",
             confirmation=prompt,
+        )
+
+    if final_state.get("execution_decision") == "WAIT":
+        return ChatResponse(
+            request_id=final_state["request_id"],
+            response=final_state.get("response") or "任务仍在执行，请稍后重试。",
+            intent=final_state.get("intent"),
+            tool_calls=tool_names,
+            status="RUNNING",
         )
 
     return ChatResponse(
@@ -204,6 +227,9 @@ async def chat(
         execution_errors=[],
         retry_count=0,
         next_tool_index=0,
+        execution_decision="",
+        replan_count=0,
+        replan_feedback={},
         needs_confirmation=False,
         confirmation_type="",
         user_confirmed=False,
@@ -217,7 +243,10 @@ async def chat(
         )
         final_state.setdefault("request_id", context.request_id)
         chat_response = _to_chat_response(final_state)
-        if claim is not None and claim.execution_token:
+        if chat_response.status == "RUNNING":
+            if http_response is not None:
+                http_response.status_code = status.HTTP_202_ACCEPTED
+        elif claim is not None and claim.execution_token:
             save_agent_response(
                 owner_id=context.owner_id,
                 request_id=context.request_id,
@@ -272,16 +301,18 @@ async def get_chat_request(
 @router.post("/resume", response_model=ChatResponse)
 async def resume_chat(
     request: ResumeAgentRequest,
+    http_response: Response,
     current_user: dict = Depends(get_current_user),
 ):
-    """恢复等待人工确认的 Agent。
+    """恢复等待用户确认或澄清的 Agent。
 
-    前端只提交 interrupt_id 与布尔值 confirmed。owner_id 和 thread_id 都由
-    登录态推导，避免恢复到其他用户的检查点。
+    owner_id 和 thread_id 都由登录态推导，避免恢复到其他用户的检查点。
+    confirmation 提交 ``confirmed``；候选澄清提交 ``candidate_id``；自由文本
+    澄清提交 ``answer``。三者必须且只能出现一个。
 
     前端调用示例：
     ``POST /api/chat/resume``
-    ``{"interrupt_id": "响应中的 ID", "confirmed": true}``
+    ``{"interrupt_id": "响应中的 ID", "candidate_id": "person_123"}``
     """
     owner_id = current_user["user_id"]
     config = _graph_config(owner_id)
@@ -289,11 +320,26 @@ async def resume_chat(
     # thread_id 先定位会话，再用 LangGraph 生成的 interrupt_id 定位该会话中
     # 具体的暂停点。旧弹窗、重复点击和错误 ID 都不能恢复其他中断。
     snapshot = agent_graph.get_state(config)
-    pending = (snapshot.values or {}).get("pending_confirmation")
-    if not pending:
-        raise HTTPException(status_code=409, detail="当前没有等待确认的操作")
-    if request.interrupt_id not in _pending_interrupt_ids(snapshot):
-        raise HTTPException(status_code=409, detail="确认信息已失效，请重新发起操作")
+    pending_interactions = _pending_interrupt_payloads(snapshot)
+    pending = pending_interactions.get(request.interrupt_id)
+    if pending is None:
+        raise HTTPException(status_code=409, detail="交互信息已失效，请重新发起操作")
+
+    interaction_type = pending.get("interaction_type", "CONFIRMATION")
+    if interaction_type == "CONFIRMATION" and request.confirmed is None:
+        raise HTTPException(status_code=422, detail="当前操作需要 confirmed")
+    if (
+        interaction_type == "CLARIFICATION"
+        and pending.get("clarification_type") == "CANDIDATE_SELECTION"
+        and request.candidate_id is None
+    ):
+        raise HTTPException(status_code=422, detail="当前澄清需要 candidate_id")
+    if (
+        interaction_type == "CLARIFICATION"
+        and pending.get("clarification_type") == "FREE_TEXT"
+        and request.answer is None
+    ):
+        raise HTTPException(status_code=422, detail="当前澄清需要 answer")
 
     request_id = (snapshot.values or {}).get("request_id")
     if not isinstance(request_id, str):
@@ -314,23 +360,28 @@ async def resume_chat(
     #     i.id: f"answer for {i.value}" for i in stream.interrupts
     # }
     try:
+        resume_value = request.model_dump(
+            exclude={"interrupt_id"},
+            exclude_none=True,
+        )
         final_state = agent_graph.invoke(
             Command(
                 resume={
-                    request.interrupt_id: {
-                        "confirmed": request.confirmed,
-                    }
+                    request.interrupt_id: resume_value
                 }
             ),
             config=config,
         )
         chat_response = _to_chat_response(final_state)
-        save_agent_response(
-            owner_id=owner_id,
-            request_id=request_id,
-            response=chat_response.model_dump(mode="json"),
-            execution_token=resume_claim.execution_token,
-        )
+        if chat_response.status == "RUNNING":
+            http_response.status_code = status.HTTP_202_ACCEPTED
+        else:
+            save_agent_response(
+                owner_id=owner_id,
+                request_id=request_id,
+                response=chat_response.model_dump(mode="json"),
+                execution_token=resume_claim.execution_token,
+            )
         return chat_response
     except Exception as exc:
         logger.exception("Agent 恢复失败: request_id=%s", request_id)

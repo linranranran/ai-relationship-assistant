@@ -27,7 +27,9 @@ def request_confirmation(state: AgentState) -> Command:
             goto=END,
         )
 
-    resume_value = interrupt(pending)
+    # 明确标注交互类型，让 HTTP 层和前端使用确认控件，而不是澄清输入框。
+    payload = {**pending, "interaction_type": "CONFIRMATION"}
+    resume_value = interrupt(payload)
 
     # interrupt_id 的匹配由 LangGraph 负责。进入到这里说明当前 interrupt
     # 已经收到了与其 ID 对应的恢复值；节点只校验业务输入的结构和类型。

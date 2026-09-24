@@ -24,7 +24,11 @@ MODEL_FORBIDDEN_ARGUMENTS = frozenset(
     {"owner_id", "user_id", "self_person_id", "confirmed", "idempotency_key"}
 )
 
-def sanitize_model_tool_calls(raw_tool_calls: Any, request_id: str) -> list[dict]:
+def sanitize_model_tool_calls(
+    raw_tool_calls: Any,
+    request_id: str,
+    plan_version: int = 0,
+) -> list[dict]:
     """清洗模型产生的 Tool 计划。
 
     1. 按 Tool 定义校验必填参数和参数类型；
@@ -83,7 +87,7 @@ def sanitize_model_tool_calls(raw_tool_calls: Any, request_id: str) -> list[dict
         # 从而选择安全失败，而不是重复产生业务副作用。
         call_id = common_tool.generate_deterministic_prefix_uuid(
             "call_",
-            f"agent-request:{request_id}:step:{index}",
+            f"agent-request:{request_id}:plan:{plan_version}:step:{index}",
         )
         sanitized.append(
             {

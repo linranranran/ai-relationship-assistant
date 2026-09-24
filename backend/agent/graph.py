@@ -10,6 +10,7 @@ from backend.agent.nodes.classify_intent import classify_intent
 from backend.agent.nodes.extract_info import extract_info
 from backend.agent.nodes.plan_tasks import plan_tasks
 from backend.agent.nodes.execute_tools import execute_tools
+from backend.agent.nodes.observe_execution import observe_execution
 from backend.agent.nodes.generate_response import generate_response
 from backend.agent.nodes.ask_clarification import ask_clarification
 from backend.agent.nodes.request_confirmation import request_confirmation
@@ -25,11 +26,12 @@ def build_agent_graph(checkpointer=None):
     节点流转（默认边 → Command 可覆盖）：
     classify_intent       → extract_info    （Command 可跳到 ask_clarification / plan_tasks / generate_response）
     extract_info          → plan_tasks      （无条件）
-    plan_tasks            → execute_tools / request_confirmation
+    plan_tasks            → execute_tools / ask_clarification
     request_confirmation  → execute_tools / END
-    execute_tools         → generate_response （Command 可跳到 ask_clarification）
+    execute_tools         → observe_execution
+    observe_execution     → generate_response / plan_tasks / ask_clarification / END
     generate_response     → END             （终端节点，无出边）
-    ask_clarification     → END             （终端节点，无出边）
+    ask_clarification     → execute_tools / classify_intent / END（interrupt 后恢复）
     """
     graph = StateGraph(AgentState)
 
@@ -38,6 +40,7 @@ def build_agent_graph(checkpointer=None):
     graph.add_node("extract_info", extract_info)
     graph.add_node("plan_tasks", plan_tasks)
     graph.add_node("execute_tools", execute_tools)
+    graph.add_node("observe_execution", observe_execution)
     graph.add_node("generate_response", generate_response)
     graph.add_node("ask_clarification", ask_clarification)
     graph.add_node("request_confirmation", request_confirmation)
@@ -47,7 +50,8 @@ def build_agent_graph(checkpointer=None):
 
     # ── 纯 Command 路由，不加默认边以免和 Command goto 并行 ──
     # 每个节点通过 Command(update, goto) 自行决定下一步
-    # 终端节点 (generate_response / ask_clarification) 无出边 → 自动 END
+    # generate_response 是普通终端节点；两个交互节点使用 interrupt 暂停，
+    # 恢复后再由各自的 Command.goto 决定后续路径。
 
     return graph.compile(checkpointer=checkpointer)
 

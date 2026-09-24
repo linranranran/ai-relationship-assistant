@@ -7,7 +7,15 @@ The backend derives them from the authenticated user.
 from datetime import datetime
 from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 
 PHONE_PATTERN = r"^1[3-9]\d{9}$"
@@ -32,12 +40,29 @@ class ChatRequest(StrictRequest):
 
 
 class ResumeAgentRequest(StrictRequest):
-    """恢复被 interrupt 暂停的 Agent；用户身份仍从令牌中获取。"""
+    """恢复被 interrupt 暂停的 Agent；只提交当前交互需要的答案字段。"""
 
     interrupt_id: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)
     ]
-    confirmed: StrictBool = Field(description="必须是 JSON 布尔值 true/false")
+    confirmed: Optional[StrictBool] = Field(
+        default=None,
+        description="确认交互使用，必须是 JSON 布尔值 true/false",
+    )
+    candidate_id: Optional[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)]
+    ] = Field(default=None, description="候选选择澄清使用")
+    answer: Optional[ChatMessage] = Field(default=None, description="自由文本澄清使用")
+
+    @model_validator(mode="after")
+    def exactly_one_answer(self):
+        supplied = sum(
+            value is not None
+            for value in (self.confirmed, self.candidate_id, self.answer)
+        )
+        if supplied != 1:
+            raise ValueError("confirmed、candidate_id、answer 必须且只能提交一个")
+        return self
 
 
 class AuthRequest(StrictRequest):
@@ -66,13 +91,33 @@ class ConfirmationPrompt(BaseModel):
     tool_names: list[str] = Field(default_factory=list)
 
 
+class ClarificationCandidate(BaseModel):
+    id: str
+    label: str
+    description: str = ""
+
+
+class ClarificationPrompt(BaseModel):
+    interrupt_id: str
+    clarification_type: Literal["CANDIDATE_SELECTION", "FREE_TEXT"]
+    question: str
+    candidates: list[ClarificationCandidate] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     request_id: str = Field(description="本次请求的幂等键，重试和查询必须复用")
     response: str = Field(description="Agent 的回复")
     intent: Optional[str] = Field(default=None, description="识别的意图")
     tool_calls: Optional[list[str]] = Field(default=None, description="执行的 Tool 列表")
-    status: Literal["RUNNING", "COMPLETED", "CONFIRMATION_REQUIRED", "FAILED"] = "COMPLETED"
+    status: Literal[
+        "RUNNING",
+        "COMPLETED",
+        "CONFIRMATION_REQUIRED",
+        "CLARIFICATION_REQUIRED",
+        "FAILED",
+    ] = "COMPLETED"
     confirmation: Optional[ConfirmationPrompt] = None
+    clarification: Optional[ClarificationPrompt] = None
 
 
 class PersonResponse(BaseModel):

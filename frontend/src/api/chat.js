@@ -11,3 +11,11 @@ export const sendMessage = (message, requestId) =>
 
 export const getRequestStatus = (requestId) =>
   api.get(`/chat/requests/${encodeURIComponent(requestId)}`)
+
+// 恢复 LangGraph interrupt。payload 三选一：
+// { confirmed: boolean } / { candidate_id: string } / { answer: string }
+export const resumeInteraction = (interruptId, payload) =>
+  api.post('/chat/resume', {
+    interrupt_id: interruptId,
+    ...payload,
+  }, { timeout: 60_000 })

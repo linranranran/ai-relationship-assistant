@@ -24,7 +24,9 @@ class AgentRequestStatus(StrEnum):
 
     RUNNING = "running"  # 当前有工作进程执行这次请求。
     COMPLETED = "completed"  # 请求已完成，可以直接复用 response。
-    CONFIRMATION_REQUIRED = "confirmation_required"  # LangGraph 正在等待人工确认。
+    # 数据库沿用原字段值；它现在表示 LangGraph 正在等待任意人工交互，具体类型
+    # 由已保存 ChatResponse 的 status 区分。
+    CONFIRMATION_REQUIRED = "confirmation_required"
     FAILED = "failed"  # 请求发生系统错误，可以使用同一个 request_id 重试。
 
 
@@ -157,7 +159,7 @@ def save_agent_response(
     response_status = response.get("status")
     status = (
         AgentRequestStatus.CONFIRMATION_REQUIRED
-        if response_status == "CONFIRMATION_REQUIRED"
+        if response_status in {"CONFIRMATION_REQUIRED", "CLARIFICATION_REQUIRED"}
         else AgentRequestStatus.COMPLETED
     )
     if not finish_agent_request(

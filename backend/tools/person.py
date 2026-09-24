@@ -9,14 +9,31 @@ from backend.db.neo4j_client import get_neo4j_driver
 from backend.db.chroma_client import get_chroma_client, get_person_collection
 from backend.services.llm import get_llm_client
 from backend.services.embedding import get_embedding_client, embed_text
+from backend.agent.execution_policy import ToolErrorCode
 
 logger = logging.getLogger(__name__)
 
 EMBEDDING_FIELDS = {"name", "gender", "birth_year", "occupation",
                     "education", "hobbies", "personality", "tags"}
 
-def tool_response(msg:str , success:bool , data:dict = None) -> dict:
-    return {"success": success, "msg": msg , "data": data or {}}
+def tool_response(
+    msg: str,
+    success: bool,
+    data: dict | list | None = None,
+    error_code: str | None = None,
+    retryable: bool = False,
+) -> dict:
+    """所有Tool共用的结构化返回协议。
+
+    TODO(你来实现各Tool时)：失败必须选择准确的error_code，例如
+    NOT_FOUND、AMBIGUOUS、INVALID_ARGUMENT、CONFLICT或TRANSIENT；不要让
+    observe_execution解析中文msg。临时网络错误设置retryable=True。
+    """
+    response = {"success": success, "msg": msg, "data": data or {}}
+    if not success:
+        response["error_code"] = error_code or "UNKNOWN"
+        response["retryable"] = retryable
+    return response
 
 def add_person(**kwargs) -> dict:
     """
@@ -303,6 +320,25 @@ def find_person(**kwargs) -> dict:
             result = chroma_client.semantic_search_person(collection, vec, owner_id , limit)
         else:
             return tool_response(msg=f"未知搜索模式: {mode}", success=False)
+        # TODO(你来实现)：统一不同搜索模式的空结果和多候选语义。
+        # - 没找到：success=False, error_code="NOT_FOUND"
+        # - 精确查询出现多个候选：success=False, error_code="AMBIGUOUS",
+        #   data={"candidates": [...]}
+        # - 唯一命中：success=True，并保证data结构能被后续$ref稳定引用。
+        if result is None or len(result) == 0:
+            return tool_response(
+                msg="没有找到指定人物",
+                success=False,
+                error_code=ToolErrorCode.NOT_FOUND,
+                data={"query": query},
+            )
+        elif len(result) > 1:
+            return tool_response(
+                msg="找到多个相关人物",
+                success=False,
+                error_code=ToolErrorCode.AMBIGUOUS,
+                data={"candidates": result},
+            )
         return tool_response(msg="查询用户信息成功", success=True , data = result)
     except Exception as e:
         msg = f"查询人物失败: {str(e)}"
