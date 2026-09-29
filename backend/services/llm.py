@@ -4,6 +4,8 @@
 
 import logging
 
+from httpx import Timeout
+
 from backend.agent.memory.ports import ConservativeTokenCounter
 from backend.config import (
     AGENT_CONTEXT_SAFETY_TOKENS,
@@ -12,6 +14,7 @@ from backend.config import (
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MODEL,
+    LLM_REQUEST_TIMEOUT_SECONDS,
 )
 from langfuse.openai import OpenAI
 
@@ -24,6 +27,13 @@ def get_llm_client() -> OpenAI:
     return OpenAI(
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
+        # 只延长单次模型调用的读/写等待；连接和连接池等待仍保留短超时。
+        timeout=Timeout(
+            connect=5.0,
+            read=LLM_REQUEST_TIMEOUT_SECONDS,
+            write=LLM_REQUEST_TIMEOUT_SECONDS,
+            pool=10.0,
+        ),
     )
 
 

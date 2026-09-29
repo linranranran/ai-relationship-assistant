@@ -36,6 +36,11 @@ logging.basicConfig(
 LLM_API_KEY = _get("LLM_API_KEY", "sk-placeholder")
 LLM_BASE_URL = _get("LLM_BASE_URL", "https://api.deepseek.com/v1")
 LLM_MODEL = _get("LLM_MODEL", "deepseek-chat")
+LLM_REQUEST_TIMEOUT_SECONDS = _get_float("LLM_REQUEST_TIMEOUT_SECONDS", 600.0)
+
+# running 幂等记录多久后允许同一个 ID 的重试抢占；这不是工作流执行超时。
+AGENT_REQUEST_STALE_SECONDS = _get_int("AGENT_REQUEST_STALE_SECONDS", 300)
+AGENT_TOOL_STALE_SECONDS = _get_int("AGENT_TOOL_STALE_SECONDS", 300)
 
 # --- Embedding ---
 EMBEDDING_API_KEY = _get("EMBEDDING_API_KEY", "sk-placeholder")

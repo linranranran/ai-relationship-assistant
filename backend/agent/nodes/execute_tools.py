@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # 第一阶段只为新增人物接入业务数据库幂等。add_relation 完成相同的唯一键或
 # MERGE 约束后，再把它加入这里。仅有 PostgreSQL 执行记录还不能阻止业务库重复写。
 BUSINESS_IDEMPOTENT_TOOLS = frozenset({"add_person"})
+SELF_PERSON_MARKERS = frozenset({"@self", "self_person_id"})
 
 
 def _serializable_tool_value(value):
@@ -64,7 +65,7 @@ def _successful_results_by_step(records: list[dict]) -> dict[str, dict]:
     return {
         record["step_id"]: record["result"]
         for record in records
-        if record.get("status") == ToolStepStatus.SUCCESS
+        if record.get("status") in {ToolStepStatus.SUCCESS, ToolStepStatus.RESOLVED}
         and isinstance(record.get("step_id"), str)
         and isinstance(record.get("result"), dict)
     }
@@ -146,7 +147,9 @@ def _append_problem(
     errors.append(message)
 
 
-def _resolve_and_validate_args(call: dict, results_by_step: dict[str, dict]) -> dict:
+def _resolve_and_validate_args(
+    state: AgentState, call: dict, results_by_step: dict[str, dict]
+) -> dict:
     """解析前置步骤引用，再用 Pydantic 做最终参数校验。
 
     规划阶段遇到 ``$ref`` 时还不知道真实值类型，所以完整校验必须放在引用
@@ -156,6 +159,27 @@ def _resolve_and_validate_args(call: dict, results_by_step: dict[str, dict]) -> 
     resolved = resolve_result_references(call.get("args", {}), results_by_step)
     concrete_input = dict(resolved)
     confirmed = concrete_input.pop("confirmed", None)
+    if call["tool"] == "add_relation":
+        # 模型只提供“本人”的标记，真实 Person ID 必须来自已认证的 Agent state。
+        # 兼容旧检查点中已经出现的字面值 self_person_id。
+        for field in ("from_person_id", "to_person_id"):
+            value = concrete_input.get(field)
+            if isinstance(value, str) and value in SELF_PERSON_MARKERS:
+                concrete_input[field] = state["self_person_id"]
+
+        # 旧规划会把“魏山凯是我的朋友”写成 魏山凯 -> 本人。朋友是对称关系，
+        # 统一存为 本人 -> 朋友，避免后续事实提取把本人当成目标人物。
+        if (
+            concrete_input.get("relation_type") == "朋友"
+            and concrete_input.get("to_person_id") == state["self_person_id"]
+            and concrete_input.get("from_person_id") != state["self_person_id"]
+        ):
+            concrete_input["from_person_id"], concrete_input["to_person_id"] = (
+                concrete_input["to_person_id"],
+                concrete_input["from_person_id"],
+            )
+        if concrete_input.get("from_person_id") == concrete_input.get("to_person_id"):
+            raise ValueError("关系两端不能是同一人物")
     validated = TOOL_ARGUMENT_MODELS[call["tool"]].model_validate(concrete_input)
     concrete = validated.model_dump(exclude_none=True)
     if confirmed is True:
@@ -168,6 +192,8 @@ def _runtime_args(state: AgentState, call: dict, resolved_args: dict) -> dict:
 
     owner_id、self_person_id 和业务幂等键绝不能接受模型或浏览器传值，否则
     会造成越权查询或跨用户复用幂等结果。
+    add_relation 的本人引用已在参数解析阶段转换；这里不能无条件覆盖起点，
+    否则“甲是乙的朋友”也会被错误地写成本人与乙的关系。
     """
     runtime = dict(resolved_args)
     runtime["owner_id"] = state["user_id"]
@@ -185,7 +211,7 @@ def _claim(state: AgentState, call: dict, resolved_args: dict) -> ExecutionClaim
 
     * PostgreSQL ``running/success/failed``：这次调用在历史上执行到了哪里；
     * Claim ``EXECUTE/WAIT/IN_PROGRESS``：当前进程现在应该采取什么动作；
-    * Graph ``SUCCESS/FAILED/SKIPPED``：本轮 Agent 如何记录该步骤。
+    * Graph ``SUCCESS/RESOLVED/FAILED/SKIPPED``：本轮 Agent 如何记录该步骤。
     """
     return claim_execution(
         call_id=call["call_id"],
@@ -203,6 +229,7 @@ def _invoke_tool_with_retry(tool_name: str, runtime_args: dict) -> tuple[dict, i
     第一版沿用现有策略，最多执行两次；明显的参数缺失和数据冲突不重试。
     等全部 Tool 接入结构化 ``retryable`` 后，应删除文案判断。
     """
+    logger.info(f"4.1、开始执行{tool_name}工具，参数={runtime_args}")
     started_at = perf_counter()
     result: dict = {"success": False, "message": "Tool 未返回结果"}
 
@@ -218,6 +245,7 @@ def _invoke_tool_with_retry(tool_name: str, runtime_args: dict) -> tuple[dict, i
             logger.error("%s 重试仍失败: %s", tool_name, message)
 
     latency_ms = max(0, int((perf_counter() - started_at) * 1000))
+    logger.info(f"4.2、执行{tool_name}工具结束，耗时={latency_ms}")
     return result, latency_ms
 
 
@@ -329,6 +357,7 @@ def execute_tools(state: AgentState) -> Command:
     errors = list(state.get("execution_errors", []))
     results_by_step = _successful_results_by_step(records)
 
+    logger.info(f"4、进入到执行任务节点，state= {state}")
     for index in range(state.get("next_tool_index", 0), len(tool_calls)):
         call = tool_calls[index]
         step_id = call["step_id"]
@@ -368,16 +397,23 @@ def execute_tools(state: AgentState) -> Command:
                 and dependency in results_by_step
             ]
             if found_probes:
-                _append_problem(
-                    records, errors, call,
-                    message=f"步骤 {step_id} 已跳过：同名人物已存在",
-                    error_code=ToolErrorCode.CONFLICT,
-                    status=ToolStepStatus.SKIPPED,
-                )
+                # 这一步的目标是得到一个可引用的人物 ID。精确查询已命中时，
+                # 复用查询结果，而不是把“无需新增”误记成依赖失败。
+                found_result = results_by_step[found_probes[0]]
+                found_person = found_result.get("data")
+                if not isinstance(found_person, dict) or not found_person.get("id"):
+                    _append_problem(
+                        records, errors, call,
+                        message=f"步骤 {step_id} 的查询结果缺少人物 ID",
+                        error_code=ToolErrorCode.INTERNAL,
+                    )
+                    continue
+                records.append(_record(call, ToolStepStatus.RESOLVED, result=found_result))
+                results_by_step[step_id] = found_result
                 continue
 
         try:
-            resolved_args = _resolve_and_validate_args(call, results_by_step)
+            resolved_args = _resolve_and_validate_args(state, call, results_by_step)
         except Exception as exc:
             _append_problem(
                 records,

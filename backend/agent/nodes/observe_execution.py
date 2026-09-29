@@ -10,6 +10,8 @@ from backend.agent.execution_policy import (
 )
 from backend.agent.state import AgentState
 
+import logging
+logger = logging.getLogger(__name__)
 
 def _observe(state: AgentState) -> ExecutionObservation:
     """使用确定性策略解释执行结果，不调用大模型。"""
@@ -49,6 +51,7 @@ def _route_decision(
     * WAIT：其他进程仍在执行或遇到临时故障，本轮结束；
     * ASK_USER：进入澄清节点。执行期歧义会在那里 ``interrupt``。
     """
+    logger.info(f"5.1、观察节点反馈结果，decision={observation.decision}")
     if observation.decision == ExecutionDecision.COMPLETE:
         return Command(update=update, goto="generate_response")
 
@@ -86,6 +89,7 @@ def observe_execution(state: AgentState) -> Command:
     2. 返回 ``AMBIGUOUS``，观察是否进入结构化澄清中断；
     3. 返回 ``IN_PROGRESS`` 或 ``TRANSIENT``，观察是否结束并提示稍后重试。
     """
+    logger.info(f"5、进入到观察节点，state={state}")
     observation = _observe(state)
     update = _observation_update(state, observation)
     return _route_decision(state, observation, update)

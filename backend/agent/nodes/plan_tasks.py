@@ -105,13 +105,14 @@ def plan_tasks(state: AgentState) -> Command:
     的确认摘要并暂停，否则确认页面展示的可能仍是模型猜出的参数。
     """
     try:
+        logger.info(f"3、进入到计划任务节点，state= {state}")
         model_plan = _request_model_plan(state, _build_planning_prompt(state))
         tool_calls = sanitize_model_tool_calls(
             model_plan.get("tool_calls", []),
             request_id=state["request_id"],
             plan_version=state.get("replan_count", 0),
         )
-
+        logger.info(f"3.1、LLM计划任务结果，tool_calls= {tool_calls}")
         if not tool_calls:
             reason = (
                 "重规划没有生成可执行步骤，需要用户补充信息"

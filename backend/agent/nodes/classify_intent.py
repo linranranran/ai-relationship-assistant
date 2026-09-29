@@ -14,11 +14,14 @@ from backend.services.llm import get_llm_client, chat
 EXTRACT_INFO_LIST = ["ADD_PERSON", "UPDATE_PERSON", "ADD_RELATION", "UPDATE_RELATION"]
 PLAN_TASKS_LIST = ["QUERY_PERSON", "QUERY_KINSHIP", "SEMANTIC_SEARCH", "LIST_RELATIONS", "DELETE_PERSON", "DELETE_RELATION"]
 
+import logging
+logger = logging.getLogger(__name__)
 
 def classify_intent(state: AgentState) -> Command:
     user_input = state["user_input"]
     update = {}
 
+    logger.info(f"2、进入到识别用户意图节点，state: {state}")
     if not user_input or not user_input.strip():
         update["intent"] = "UNCLEAR"
         update["intent_confidence"] = 0.0
@@ -47,6 +50,7 @@ def classify_intent(state: AgentState) -> Command:
     update["intent"] = user_intent
     update["intent_confidence"] = confidence
 
+    logger.info(f"2.1、LLM识别用户意图结果，user_intent= {user_intent}，confidence={confidence}")
     if confidence < 0.6 or user_intent == "UNCLEAR":
         return Command(update=update, goto="ask_clarification")
     elif user_intent in EXTRACT_INFO_LIST:

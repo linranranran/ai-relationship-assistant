@@ -111,16 +111,17 @@ PLAN_TASKS_PROMPT = """你是人际关系助手的任务规划器。根据意图
 === 规划原则 ===
 
 1. 新增人物前，必须先 find_person 检查是否已存在
-2. 新增关系前，必须先 find_person 确认两个人物都存在
+2. 新增关系前，必须先 find_person 确认涉及的其他人物存在；当前用户的“本人”节点由服务端提供，无需查找
 3. 如果涉及的人不存在，先 add_person 再 add_relation
 4. 删除操作只规划 person_id/relation_id，不要输出 confirmed；确认由服务端代码处理
 5. 查询称呼时，先 query_relation_path 再 get_kinship_title
 6. 语义搜索用 find_person，search_mode="semantic"
 7. 查询人物信息时，先 find_person 再 get_person_detail
-8. 不要输出 owner_id、user_id、self_person_id，这些身份参数由服务端注入
+8. 不要输出 owner_id、user_id、self_person_id 这些身份参数；add_relation 中需要引用“本人”时，只能在 from_person_id 或 to_person_id 中使用字符串 "@self"，真实人物 ID 由服务端解析
 9. 每一步必须提供唯一 step_id；依赖前一步时使用 depends_on
 10. 需要使用前一步结果时，用结构化 $ref，path 从 Tool 返回对象开始读取
 11. depends_on 和 $ref 只能引用排在当前步骤之前的 step_id
+12. “我有个朋友张三”应建立 本人 -> 张三 的“朋友”关系；先精确查找，再添加或复用张三，最后从 add_person 步骤的 data.id 引用张三
 
 === 依赖调用示例 ===
 
@@ -142,6 +143,21 @@ PLAN_TASKS_PROMPT = """你是人际关系助手的任务规划器。根据意图
         }}
       }}
     }}
+  ]
+}}
+
+=== 本人的朋友示例 ===
+
+{{
+  "tool_calls": [
+    {{"step_id": "find_friend", "tool": "find_person",
+      "args": {{"query": "张三", "search_mode": "exact"}}}},
+    {{"step_id": "add_friend", "tool": "add_person", "depends_on": ["find_friend"],
+      "args": {{"name": "张三"}}}},
+    {{"step_id": "link_friend", "tool": "add_relation", "depends_on": ["add_friend"],
+      "args": {{"from_person_id": "@self",
+                "to_person_id": {{"$ref": {{"step_id": "add_friend", "path": "data.id"}}}},
+                "relation_type": "朋友"}}}}
   ]
 }}
 
@@ -169,6 +185,7 @@ GENERATE_RESPONSE_PROMPT = """你是人际关系助手。根据执行结果生�
 - 如果有关系路径，展示出来
 - 如果操作成功，简要说明做了什么
 - 如果操作失败，说明原因并给出建议
+- Tool 步骤状态 RESOLVED 表示人物原本已存在并被复用，不要说成“新建人物”
 - 结尾可以加一句友好的提示
 
 === 上下文 ===

@@ -9,6 +9,7 @@ from enum import StrEnum
 from hashlib import sha256
 from uuid import uuid4
 
+from backend.config import AGENT_REQUEST_STALE_SECONDS
 from backend.db.agent_request_store import (
     finish_agent_request,
     get_agent_request,
@@ -61,7 +62,7 @@ def claim_agent_request(
     request_id: str,
     thread_id: str,
     message: str,
-    stale_after_seconds: int = 300,
+    stale_after_seconds: int = AGENT_REQUEST_STALE_SECONDS,
 ) -> AgentRequestClaim:
     """原子地决定当前进程是否可以执行这次 Agent 请求。"""
     message_hash = hash_request_message(message)

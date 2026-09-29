@@ -43,7 +43,7 @@ class AgentState(TypedDict):
     next_tool_index: int               # 依赖执行器下一步要执行的 Tool 下标
 
     # === 执行观察与重规划 ===
-    execution_decision: str            # COMPLETE / REPLAN / ASK_USER / WAIT
+    execution_decision: str            # COMPLETE / REPLAN / ASK_USER / WAIT / CANCELLED
     replan_count: int                   # 自动重规划次数，必须设置上限防止死循环
     replan_feedback: dict               # 上轮失败步骤和错误码，供规划器修正计划
 

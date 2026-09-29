@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from backend.agent.execution_enums import ExecutionClaimAction, ToolExecutionStatus
+from backend.config import AGENT_TOOL_STALE_SECONDS
 from backend.db.postgres_client import (
     finish_tool_execution,
     get_tool_execution,
@@ -32,7 +33,7 @@ def claim_execution(
     thread_id: str,
     tool_name: str,
     arguments: dict,
-    stale_after_seconds: int = 300,
+    stale_after_seconds: int = AGENT_TOOL_STALE_SECONDS,
 ) -> ExecutionClaim:
     """
         原子地决定该工人是否可以执行该工具。

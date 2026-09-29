@@ -65,6 +65,14 @@ class ResumeAgentRequest(StrictRequest):
         return self
 
 
+class CancelAgentRequest(StrictRequest):
+    """只允许取消当前登录用户会话中仍在等待的指定中断。"""
+
+    interrupt_id: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)
+    ]
+
+
 class AuthRequest(StrictRequest):
     phone_number: PhoneNumber = Field(description="中国大陆手机号")
     password: Password = Field(description="密码")
@@ -114,6 +122,7 @@ class ChatResponse(BaseModel):
         "COMPLETED",
         "CONFIRMATION_REQUIRED",
         "CLARIFICATION_REQUIRED",
+        "CANCELLED",
         "FAILED",
     ] = "COMPLETED"
     confirmation: Optional[ConfirmationPrompt] = None

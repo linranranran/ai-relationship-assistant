@@ -27,5 +27,6 @@ class ToolStepStatus(StrEnum):
     """LangGraph state 中单个 Tool 步骤的本轮执行结果。"""
 
     SUCCESS = "SUCCESS"  # 本轮执行成功，或成功复用了历史结果。
+    RESOLVED = "RESOLVED"  # 目标人物已存在；无需写入，但结果可供后续步骤引用。
     FAILED = "FAILED"  # 本轮执行、参数解析或执行权获取失败。
     SKIPPED = "SKIPPED"  # 因依赖失败或其他请求正在执行而跳过本步骤。

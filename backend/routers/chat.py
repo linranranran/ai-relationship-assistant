@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 from backend.auth import get_current_user
 from backend.models.schemas import (
+    CancelAgentRequest,
     ChatRequest,
     ChatResponse,
     ClarificationPrompt,
@@ -117,6 +118,15 @@ def _to_chat_response(final_state: dict) -> ChatResponse:
             tool_calls=tool_names,
             status="CONFIRMATION_REQUIRED",
             confirmation=prompt,
+        )
+
+    if final_state.get("execution_decision") == "CANCELLED":
+        return ChatResponse(
+            request_id=final_state["request_id"],
+            response=final_state.get("response") or "已取消本次任务。",
+            intent=final_state.get("intent"),
+            tool_calls=tool_names,
+            status="CANCELLED",
         )
 
     if final_state.get("execution_decision") == "WAIT":
@@ -421,3 +431,59 @@ async def resume_chat(
         except Exception:
             logger.exception("Agent 恢复 failed 状态保存失败")
         raise HTTPException(status_code=500, detail="Agent 恢复失败") from exc
+
+
+@router.post("/cancel", response_model=ChatResponse)
+async def cancel_chat(
+    request: CancelAgentRequest,
+    http_response: Response,
+    current_user: dict = Depends(get_current_user),
+):
+    """取消当前等待中的中断，结束图而不继续执行后续 Tool。"""
+    owner_id = current_user["user_id"]
+    config = _graph_config(owner_id)
+    graph = _runtime_graph()
+    snapshot = graph.get_state(config)
+    if request.interrupt_id not in _pending_interrupt_payloads(snapshot):
+        raise HTTPException(status_code=409, detail="交互信息已失效，请重新发起操作")
+
+    request_id = (snapshot.values or {}).get("request_id")
+    if not isinstance(request_id, str):
+        raise HTTPException(status_code=500, detail="检查点缺少 request_id")
+    claim = claim_agent_resume(owner_id=owner_id, request_id=request_id)
+    if claim.action == AgentRequestAction.RETURN_RESPONSE:
+        return _saved_chat_response(claim.response)
+    if claim.action != AgentRequestAction.EXECUTE or not claim.execution_token:
+        raise HTTPException(status_code=409, detail="该请求正在恢复，请稍后查询状态")
+
+    try:
+        # LangGraph 将此值返回到当前 interrupt()；节点看到 cancelled=True
+        # 后直接走 END，旧 interrupt_id 随之失效，下一问可重新从入口开始。
+        final_state = graph.invoke(
+            Command(resume={request.interrupt_id: {"cancelled": True}}),
+            config=config,
+        )
+        chat_response = _to_chat_response(final_state)
+        if chat_response.status != "CANCELLED":
+            raise RuntimeError("取消后图未进入终止状态")
+        # agent_request.completed 表示本次 HTTP/图运行已终结；业务结果由
+        # ChatResponse.status=CANCELLED 表达，无须改动现有数据库 CHECK 约束。
+        save_agent_response(
+            owner_id=owner_id,
+            request_id=request_id,
+            response=chat_response.model_dump(mode="json"),
+            execution_token=claim.execution_token,
+        )
+        return chat_response
+    except Exception as exc:
+        logger.exception("Agent 取消失败: request_id=%s", request_id)
+        try:
+            mark_agent_request_failed(
+                owner_id=owner_id,
+                request_id=request_id,
+                error_message=str(exc),
+                execution_token=claim.execution_token,
+            )
+        except Exception:
+            logger.exception("Agent 取消 failed 状态保存失败")
+        raise HTTPException(status_code=500, detail="取消任务失败，请查询当前状态") from exc

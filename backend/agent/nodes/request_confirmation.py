@@ -44,6 +44,18 @@ def request_confirmation(state: AgentState) -> Command:
             goto=END,
         )
 
+    if resume_value.get("cancelled") is True:
+        return Command(
+            update={
+                "execution_decision": "CANCELLED",
+                "response": "已取消本次任务。",
+                "needs_confirmation": False,
+                "pending_confirmation": None,
+                "user_confirmed": False,
+            },
+            goto=END,
+        )
+
     # 使用 ``is True``，字符串 "true"、数字 1 都不能代表真实授权。
     if resume_value.get("confirmed") is not True:
         return Command(

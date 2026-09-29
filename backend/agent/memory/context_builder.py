@@ -4,6 +4,9 @@ from dataclasses import asdict
 import json
 from typing import Any
 
+import logging
+logger = logging.getLogger(__name__)
+
 from backend.agent.memory.models import (
     ContextBundle,
     ContextStats,
@@ -114,12 +117,12 @@ def build_context_bundle(
     selected_recent_reversed: list[dict[str, Any]] = []
     for message in reversed(recent_limited):
         message_dict = _message_to_prompt_dict(message)
-        cost = runtime.token_counter.count_messages([message_dict])
-        if used_tokens + cost > budget:
+        cost = runtime.token_counter.count_messages([message_dict])#计算这条消息单独消耗多少 token。
+        if used_tokens + cost > budget:#如果加上这条消息会超过预算，就跳过它，不加入选中列表，也不增加 used_tokens。
             continue
         selected_recent_reversed.append(message_dict)
         used_tokens += cost
-    selected_recent = list(reversed(selected_recent_reversed))
+    selected_recent = list(reversed(selected_recent_reversed))#selected_recent_reversed 里保存的是从最近开始，尽可能多的、总 token 不超过预算的消息。
 
     model_messages: list[dict[str, Any]] = []
     if system_instructions:

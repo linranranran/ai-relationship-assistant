@@ -214,6 +214,16 @@ def ask_clarification(state: AgentState) -> Command:
     payload, ambiguous = _build_clarification_payload(state)
     resume_value = interrupt(payload)
 
+    # 取消是用户显式结束本轮，不把“取消执行”当作补充文本继续规划。
+    if isinstance(resume_value, dict) and resume_value.get("cancelled") is True:
+        return Command(
+            update={
+                "execution_decision": "CANCELLED",
+                "response": "已取消本次任务。",
+            },
+            goto=END,
+        )
+
     if ambiguous:
         selected = _select_original_candidate(ambiguous, resume_value)
         if selected is None:

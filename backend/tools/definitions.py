@@ -87,8 +87,8 @@ ADD_RELATION_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "from_person_id": {"type": "string", "description": "起点人物 ID"},
-                "to_person_id": {"type": "string", "description": "终点人物 ID"},
+                "from_person_id": {"type": "string", "description": "起点人物 ID；代表当前用户本人时填 @self，由服务端解析"},
+                "to_person_id": {"type": "string", "description": "终点人物 ID；代表当前用户本人时填 @self，由服务端解析"},
                 "relation_type": {
                     "type": "string",
                     "description": "关系类型：父亲/母亲/哥哥/弟弟/姐姐/妹妹/儿子/女儿/丈夫/妻子/爷爷/奶奶/外公/外婆/叔叔/伯伯/舅舅/姑姑/姨妈/堂哥/表哥/堂姐/表姐/侄子/侄女/外甥/外甥女/朋友/同事/同学/邻居/客户/导师/学生/老板/下属/合伙人",
