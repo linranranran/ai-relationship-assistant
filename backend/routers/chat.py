@@ -20,7 +20,7 @@ from backend.models.schemas import (
 )
 from backend.models.context import RequestContext
 from backend.agent.state import AgentState
-from backend.agent.graph import agent_graph
+from backend.agent.graph import get_agent_graph
 from backend.agent.request_idempotency import (
     AgentRequestAction,
     claim_agent_request,
@@ -29,15 +29,35 @@ from backend.agent.request_idempotency import (
     mark_agent_request_failed,
     save_agent_response,
 )
-from backend.agent.session import derive_thread_id
+from backend.agent.session import (
+    DEFAULT_CONVERSATION_ID,
+    derive_thread_id,
+)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 
+# 兼容单元测试直接替换 graph；正常运行时通过 get_agent_graph() 取得 lifespan
+# 已初始化的进程级实例。
+agent_graph = None
+
+
+def _runtime_graph():
+    return agent_graph or get_agent_graph()
+
 
 def _graph_config(owner_id: str) -> dict:
-    """生成 LangGraph 配置；thread_id 永远不接收前端参数。"""
-    return {"configurable": {"thread_id": derive_thread_id(owner_id)}}
+    """生成 LangGraph 检查点定位信息。
+
+    ``thread_id`` 定位用户会话，其生成规则已包含状态结构版本。根图使用
+    LangGraph 默认的空 checkpoint_ns；非空值会被 get_state 解释为子图命名空间。
+    当前每个用户只有一个默认会话；支持多会话时还要校验 owner 归属。
+    """
+    return {
+        "configurable": {
+            "thread_id": derive_thread_id(owner_id),
+        }
+    }
 
 
 def _extract_interrupt(result: dict) -> dict | None:
@@ -216,9 +236,10 @@ async def chat(
         self_person_id=context.self_person_id,
         request_id=context.request_id,
         thread_id=thread_id,
+        # 当前版本由服务端固定，不能接受浏览器随意传 conversation_id。下一阶段
+        # 新建 conversation 表后，改为查询并校验 owner 归属。
+        conversation_id=DEFAULT_CONVERSATION_ID,
         user_name=context.user_name,
-        # 对话历史应由你的 Agent checkpoint 按 owner/thread 从服务端恢复。
-        history=[],
         intent="",
         intent_confidence=0.0,
         extracted_info={},
@@ -234,10 +255,15 @@ async def chat(
         confirmation_type="",
         user_confirmed=False,
         pending_confirmation=None,
+        # recent_messages/summary 不在这里写空值，避免新一轮请求覆盖 Checkpoint
+        # 中已经积累的短期记忆；prepare_context 使用 state.get 兼容首轮和旧状态。
+        model_context=[],
+        context_stats={},
+        retrieved_memories=[],
         response="",
     )
     try:
-        final_state = agent_graph.invoke(
+        final_state = _runtime_graph().invoke(
             initial_state,
             config=_graph_config(context.owner_id),
         )
@@ -319,7 +345,7 @@ async def resume_chat(
 
     # thread_id 先定位会话，再用 LangGraph 生成的 interrupt_id 定位该会话中
     # 具体的暂停点。旧弹窗、重复点击和错误 ID 都不能恢复其他中断。
-    snapshot = agent_graph.get_state(config)
+    snapshot = _runtime_graph().get_state(config)
     pending_interactions = _pending_interrupt_payloads(snapshot)
     pending = pending_interactions.get(request.interrupt_id)
     if pending is None:
@@ -364,7 +390,7 @@ async def resume_chat(
             exclude={"interrupt_id"},
             exclude_none=True,
         )
-        final_state = agent_graph.invoke(
+        final_state = _runtime_graph().invoke(
             Command(
                 resume={
                     request.interrupt_id: resume_value

@@ -325,21 +325,25 @@ def find_person(**kwargs) -> dict:
         # - 精确查询出现多个候选：success=False, error_code="AMBIGUOUS",
         #   data={"candidates": [...]}
         # - 唯一命中：success=True，并保证data结构能被后续$ref稳定引用。
-        if result is None or len(result) == 0:
+        # exact 返回一条人物 dict，fuzzy/semantic 返回列表。直接对 dict 取
+        # len() 会把人物字段数误判为“候选人数”，导致唯一命中进入 AMBIGUOUS。
+        candidates = [result] if isinstance(result, dict) else result
+        if not candidates:
             return tool_response(
                 msg="没有找到指定人物",
                 success=False,
                 error_code=ToolErrorCode.NOT_FOUND,
                 data={"query": query},
             )
-        elif len(result) > 1:
+        elif len(candidates) > 1:
             return tool_response(
                 msg="找到多个相关人物",
                 success=False,
                 error_code=ToolErrorCode.AMBIGUOUS,
-                data={"candidates": result},
+                data={"candidates": candidates},
             )
-        return tool_response(msg="查询用户信息成功", success=True , data = result)
+        # 唯一命中统一返回 dict，让规划器的 $ref: data.id 稳定可用。
+        return tool_response(msg="查询用户信息成功", success=True, data=candidates[0])
     except Exception as e:
         msg = f"查询人物失败: {str(e)}"
         logger.error(msg, exc_info=True)

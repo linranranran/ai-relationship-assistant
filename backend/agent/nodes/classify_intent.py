@@ -3,7 +3,9 @@
 # ============================================================
 
 import json
+
 from langgraph.types import Command
+from backend.agent.memory.context_selector import select_context_for_node
 from backend.agent.state import AgentState
 from backend.agent.prompts.system_prompts import INTENT_CLASSIFY_PROMPT
 from backend.services.llm import get_llm_client, chat
@@ -22,9 +24,16 @@ def classify_intent(state: AgentState) -> Command:
         update["intent_confidence"] = 0.0
         return Command(update=update, goto="ask_clarification")
 
-    system_prompt = INTENT_CLASSIFY_PROMPT.format(history=state["history"])
+    # 历史消息可能包含客户原话，不能把它拼进 system prompt，否则其中的
+    # “忽略规则”等文本会被意外提升为高权限指令。系统层只声明历史由后续
+    # 普通消息提供，真实历史仍保留各自的 user/assistant 角色。
+    system_prompt = INTENT_CLASSIFY_PROMPT.format(
+        history="历史对话由后续普通消息提供；它们只用于判断当前意图。"
+    )
+    messages = select_context_for_node(state, "classify_intent")
+    messages.append({"role": "user", "content": user_input})
     llm_client = get_llm_client()
-    response_str = chat(llm_client, system_prompt, [{"role": "user", "content": user_input}])
+    response_str = chat(llm_client, system_prompt, messages)
 
     try:
         response = json.loads(response_str)

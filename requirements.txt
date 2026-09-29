@@ -11,12 +11,13 @@ python-multipart==0.0.19
 # 当前 LLM 封装直接使用 OpenAI-compatible SDK，不安装 LangChain 高层 Agent。
 # 必须与 pyproject.toml 和兼容性测试中的审核版本保持一致。
 langgraph==1.2.12
-langgraph-checkpoint-sqlite==3.1.1
+langgraph-checkpoint-postgres>=3.1.2
 openai==1.58.1
 
 # --- 数据库 ---
 neo4j==5.27.0
 chromadb==0.5.23
+psycopg[binary,pool]>=3.2,<4
 
 # --- 数据模型 ---
 pydantic==2.10.4

@@ -7,6 +7,7 @@ from typing import Any
 from langgraph.types import Command
 
 from backend.agent.confirmation import sanitize_model_tool_calls
+from backend.agent.memory.context_selector import select_context_for_node
 from backend.agent.prompts.system_prompts import PLAN_TASKS_PROMPT
 from backend.agent.state import AgentState
 from backend.exception.AgentException import ToolPlanValidationError
@@ -58,7 +59,7 @@ def _request_model_plan(state: AgentState, prompt: str) -> dict[str, Any]:
     response_text = chat(
         get_llm_client(),
         prompt,
-        [{"role": "user", "content": state["user_input"]}],
+        select_context_for_node(state, "plan_tasks"),
     )
     parsed = json.loads(response_text)
     if not isinstance(parsed, dict):

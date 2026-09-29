@@ -19,6 +19,10 @@ def _get(key: str, default: str = "") -> str:
 def _get_int(key: str, default: int) -> int:
     return int(os.getenv(key, default))
 
+
+def _get_float(key: str, default: float) -> float:
+    return float(os.getenv(key, default))
+
 LOG_LEVEL = _get("LOG_LEVEL", "INFO")
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
@@ -43,12 +47,42 @@ NEO4J_URI = _get("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = _get("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = _get("NEO4J_PASSWORD", "password")
 
-# --- Mysql ---
-MYSQL_HOST = _get("MYSQL_HOST", _get("MYSQL_URI", "localhost"))
-MYSQL_PORT = _get_int("MYSQL_PORT", 3306)
-MYSQL_USER = _get("MYSQL_USER", "mysql")
-MYSQL_PASSWORD = _get("MYSQL_PASSWORD", "mysql")
-MYSQL_DATABASE = _get("MYSQL_DATABASE", "relation_agent")
+# --- PostgreSQL ---
+# 业务幂等表和未来的 LangGraph Checkpointer 可以使用同一 PostgreSQL 实例，
+# 但它们各自管理自己的表。密码只放在本地 .env，不拼接进日志。
+POSTGRES_HOST = _get("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = _get_int("POSTGRES_PORT", 5432)
+POSTGRES_USER = _get("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = _get("POSTGRES_PASSWORD", "")
+POSTGRES_DATABASE = _get("POSTGRES_DATABASE", "relation-agent")
+POSTGRES_ADMIN_DATABASE = _get("POSTGRES_ADMIN_DATABASE", "postgres")
+POSTGRES_POOL_MIN_SIZE = _get_int("POSTGRES_POOL_MIN_SIZE", 1)
+POSTGRES_POOL_MAX_SIZE = _get_int("POSTGRES_POOL_MAX_SIZE", 10)
+POSTGRES_POOL_TIMEOUT_SECONDS = _get_int("POSTGRES_POOL_TIMEOUT_SECONDS", 10)
+
+# --- LangGraph Checkpointer ---
+# memory 仅用于本地调试；部署环境使用 postgres 才能跨进程恢复中断状态。
+AGENT_CHECKPOINTER_BACKEND = _get("AGENT_CHECKPOINTER_BACKEND", "memory")
+AGENT_CHECKPOINT_POOL_MIN_SIZE = _get_int("AGENT_CHECKPOINT_POOL_MIN_SIZE", 1)
+AGENT_CHECKPOINT_POOL_MAX_SIZE = _get_int("AGENT_CHECKPOINT_POOL_MAX_SIZE", 5)
+AGENT_CHECKPOINT_POOL_TIMEOUT_SECONDS = _get_int(
+    "AGENT_CHECKPOINT_POOL_TIMEOUT_SECONDS", 10
+)
+
+# --- Agent 记忆与上下文预算 ---
+# 这些值限制“每次发送给模型的内容”，不会限制 PostgreSQL 保存多少原始消息。
+AGENT_MAX_INPUT_TOKENS = _get_int("AGENT_MAX_INPUT_TOKENS", 12000)
+AGENT_RESERVED_OUTPUT_TOKENS = _get_int("AGENT_RESERVED_OUTPUT_TOKENS", 2000)
+AGENT_CONTEXT_SAFETY_TOKENS = _get_int("AGENT_CONTEXT_SAFETY_TOKENS", 1000)
+AGENT_RECENT_MESSAGE_LIMIT = _get_int("AGENT_RECENT_MESSAGE_LIMIT", 12)
+AGENT_SUMMARY_TRIGGER_RATIO = _get_float("AGENT_SUMMARY_TRIGGER_RATIO", 0.70)
+AGENT_MEMORY_RETRIEVAL_LIMIT = _get_int("AGENT_MEMORY_RETRIEVAL_LIMIT", 5)
+AGENT_SUMMARY_BATCH_LIMIT = _get_int("AGENT_SUMMARY_BATCH_LIMIT", 40)
+AGENT_SUMMARY_MIN_MESSAGES = _get_int("AGENT_SUMMARY_MIN_MESSAGES", 12)
+AGENT_MEMORY_WORKER_POLL_SECONDS = _get_float(
+    "AGENT_MEMORY_WORKER_POLL_SECONDS", 2.0
+)
+AGENT_MEMORY_JOB_STALE_SECONDS = _get_int("AGENT_MEMORY_JOB_STALE_SECONDS", 300)
 
 # --- ChromaDB ---
 CHROMA_PERSIST_DIR = _get("CHROMA_PERSIST_DIR", "./chroma_data")

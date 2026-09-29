@@ -4,30 +4,40 @@ import { Button, Input, Loading, MessagePlugin } from 'tdesign-react'
 import { createRequestId, resumeInteraction, sendMessage } from '../api/chat'
 import { MAX_CHAT_MESSAGE_LENGTH, validateChatMessage } from '../validation/requests'
 
-const loadPendingMessages = (storageKey) => {
+const readPendingRequest = (storageKey) => {
   const rawPending = localStorage.getItem(storageKey)
-  if (!rawPending) return []
+  if (!rawPending) return null
   try {
     const pending = JSON.parse(rawPending)
-    if (!pending.requestId || !pending.text) return []
-    return [
-      { role: 'user', content: pending.text },
-      pending.interaction
-        ? {
-            role: 'assistant',
-            content: pending.response,
-            interaction: pending.interaction,
-          }
-        : {
-            role: 'assistant',
-            content: '上一次请求没有收到最终结果，可以使用原请求 ID 查询或重试。',
-            retry: pending,
-          },
-    ]
+    if (typeof pending.requestId === 'string' && pending.requestId
+      && typeof pending.text === 'string' && pending.text) return pending
   } catch {
-    localStorage.removeItem(storageKey)
-    return []
+    // 本地缓存损坏时丢弃旧请求，避免下一次输入继续走错误的恢复流程。
   }
+  localStorage.removeItem(storageKey)
+  return null
+}
+
+const clearInteractions = (messages) =>
+  messages.map((message) => ({ ...message, interaction: undefined }))
+
+const loadPendingMessages = (storageKey) => {
+  const pending = readPendingRequest(storageKey)
+  if (!pending) return []
+  return [
+    { role: 'user', content: pending.text },
+    pending.interaction
+      ? {
+          role: 'assistant',
+          content: pending.response,
+          interaction: pending.interaction,
+        }
+      : {
+          role: 'assistant',
+          content: '上一次请求没有收到最终结果，可以使用原请求 ID 查询或重试。',
+          retry: pending,
+        },
+  ]
 }
 
 export default function Chat() {
@@ -53,15 +63,19 @@ export default function Chat() {
         interaction,
       }))
       setMessages((prev) => [
-        ...prev,
+        ...clearInteractions(prev),
         { role: 'assistant', content: data.response, interaction },
       ])
       return
     }
 
     if (data.status === 'RUNNING') {
+      localStorage.setItem(pendingStorageKey, JSON.stringify({
+        text: pending.text,
+        requestId: pending.requestId,
+      }))
       setMessages((prev) => [
-        ...prev,
+        ...clearInteractions(prev),
         { role: 'assistant', content: data.response, retry: pending },
       ])
       return
@@ -69,7 +83,7 @@ export default function Chat() {
 
     localStorage.removeItem(pendingStorageKey)
     setMessages((prev) => [
-      ...prev,
+      ...clearInteractions(prev),
       { role: 'assistant', content: data.response },
     ])
   }
@@ -79,7 +93,7 @@ export default function Chat() {
     const pending = { text, requestId }
     localStorage.setItem(pendingStorageKey, JSON.stringify(pending))
     setMessages((prev) => {
-      const withoutRetryPrompt = prev.filter((message) => !message.retry)
+      const withoutRetryPrompt = clearInteractions(prev.filter((message) => !message.retry))
       return appendUserMessage
         ? [...withoutRetryPrompt, { role: 'user', content: text }]
         : withoutRetryPrompt
@@ -113,7 +127,8 @@ export default function Chat() {
       return
     }
     const text = input.trim()
-    const activeInteraction = [...messages].reverse().find((message) => message.interaction)?.interaction
+    // 只有本地仍处于等待状态的请求才能消费输入。历史消息中的旧交互只用于展示。
+    const activeInteraction = readPendingRequest(pendingStorageKey)?.interaction
     if (activeInteraction?.clarification_type === 'FREE_TEXT') {
       setInput('')
       await submitResume(activeInteraction, { answer: text }, text)
@@ -130,26 +145,43 @@ export default function Chat() {
 
   const submitResume = async (interaction, payload, visibleAnswer) => {
     if (sending) return
+    const pending = readPendingRequest(pendingStorageKey)
+    if (pending?.interaction?.interrupt_id !== interaction.interrupt_id) {
+      setMessages((prev) => [
+        ...clearInteractions(prev),
+        { role: 'assistant', content: '交互信息已失效，请直接输入新问题。' },
+      ])
+      return
+    }
     setSending(true)
     if (visibleAnswer) {
       setMessages((prev) => [
-        ...prev.map((message) => ({ ...message, interaction: undefined })),
+        ...clearInteractions(prev),
         { role: 'user', content: visibleAnswer },
       ])
     } else {
-      setMessages((prev) => prev.map((message) => ({ ...message, interaction: undefined })))
+      setMessages((prev) => clearInteractions(prev))
     }
 
-    const rawPending = localStorage.getItem(pendingStorageKey)
-    const pending = rawPending ? JSON.parse(rawPending) : { text: '', requestId: '' }
     try {
       const res = await resumeInteraction(interaction.interrupt_id, payload)
       appendAgentResponse(res.data, pending)
     } catch (err) {
       const detail = err.response?.data?.detail || '恢复任务失败'
+      const expired = err.response?.status === 409
+        && detail === '交互信息已失效，请重新发起操作'
+      if (expired) {
+        localStorage.removeItem(pendingStorageKey)
+        // 自由文本可能本来就是一个新问题；还给输入框，由用户决定是否发送。
+        if (typeof payload.answer === 'string') setInput(payload.answer)
+      }
       setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: detail, interaction },
+        ...clearInteractions(prev),
+        {
+          role: 'assistant',
+          content: expired ? `${detail}。请直接输入新问题。` : detail,
+          interaction: expired ? undefined : interaction,
+        },
       ])
       MessagePlugin.error(detail)
     } finally {

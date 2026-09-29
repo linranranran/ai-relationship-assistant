@@ -11,8 +11,8 @@ dependencies = [
     # Agent V2 依赖 1.x 的 checkpoint、interrupt 和 Command resume 语义。
     # 升级此版本时，必须先通过 tests/compat/test_langgraph_runtime.py。
     "langgraph==1.2.12",
-    # 本地开发阶段使用 SQLite 保存可恢复的 Agent 中断状态。
-    "langgraph-checkpoint-sqlite==3.1.1",
+    # 生产 Checkpointer：持久化 interrupt、节点状态和恢复位置。
+    "langgraph-checkpoint-postgres>=3.1.2",
     "openai==1.58.1",
     "neo4j==5.27.0",
     "chromadb==0.6.3",
@@ -25,7 +25,8 @@ dependencies = [
     "passlib[bcrypt]==1.7.4",
     "bcrypt==4.0.1",
     "python-jose[cryptography]==3.3.0",
-    "pymysql>=1.2.3",
+    # psycopg 3：业务幂等表使用同步连接池；后续 PostgresSaver 也复用该驱动族。
+    "psycopg[binary,pool]>=3.2,<4",
 ]
 [[tool.uv.index]]
 name = "tuna"

@@ -20,7 +20,7 @@ from backend.db.agent_request_store import (
 
 
 class AgentRequestStatus(StrEnum):
-    """Agent 请求在 MySQL 中的生命周期状态。"""
+    """Agent 请求在 PostgreSQL 中的生命周期状态。"""
 
     RUNNING = "running"  # 当前有工作进程执行这次请求。
     COMPLETED = "completed"  # 请求已完成，可以直接复用 response。

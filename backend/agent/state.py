@@ -12,8 +12,18 @@ class AgentState(TypedDict):
     self_person_id: str                # 当前用户私有关系图中的“本人”节点 ID
     request_id: str                    # 本次请求链路 ID
     thread_id: str                     # LangGraph 检查点 ID，只能由服务端生成
+    conversation_id: str               # 服务端校验的业务会话 ID；当前兼容值为 default
     user_name: str                     # 当前用户姓名
-    history: List[dict]                # 最近对话历史
+    history: List[dict]                # 兼容旧检查点；新代码不再把它作为上下文入口
+
+    # === 三层记忆与上下文预算 ===
+    recent_messages: List[dict]        # Checkpoint 内的紧凑短期消息窗口
+    conversation_summary: dict         # 旧消息的滚动结构化摘要
+    summary_cursor: Optional[str]       # 摘要已覆盖到的最后 message_id
+    retrieved_memories: List[dict]     # 本轮按问题检索出的长期事实
+    model_context: List[dict]           # 本轮允许发送给模型的受控上下文
+    context_stats: dict                 # Token、裁剪和降级统计
+    memory_write_candidates: List[dict] # 尚未完成证据/确认校验的长期事实候选
 
     # === 意图分类 ===
     intent: str                        # 识别的意图：ADD_PERSON / QUERY_PERSON / ...

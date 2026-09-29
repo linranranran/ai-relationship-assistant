@@ -106,7 +106,6 @@ def build_confirmation_request(tool_calls: list[dict] ,owner_id:str) -> dict:
     """生成返回给前端的结构化确认信息。
 
     摘要由服务端按 Tool 类型生成，不能直接照抄模型的“已确认”等文本。
-    TODO(你来实现)：查询人物姓名/关系双方，让摘要从 ID 变成可读文本，
     例如“将删除张三以及与他相连的 4 条关系”。
     """
     risky_calls = [call for call in tool_calls if call.get("tool") in HIGH_RISK_TOOLS]

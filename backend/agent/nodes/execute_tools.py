@@ -2,9 +2,14 @@
 
 import logging
 from copy import deepcopy
+from datetime import date, datetime, time, timedelta
 from time import perf_counter
 
 from langgraph.types import Command
+from neo4j.time import Date as Neo4jDate
+from neo4j.time import DateTime as Neo4jDateTime
+from neo4j.time import Duration as Neo4jDuration
+from neo4j.time import Time as Neo4jTime
 
 from backend.agent.confirmation import HIGH_RISK_TOOLS, build_confirmation_request
 from backend.agent.execution_enums import ExecutionClaimAction, ToolStepStatus
@@ -23,8 +28,31 @@ from backend.tools.registry import TOOL_ARGUMENT_MODELS, execute_tool
 logger = logging.getLogger(__name__)
 
 # 第一阶段只为新增人物接入业务数据库幂等。add_relation 完成相同的唯一键或
-# MERGE 约束后，再把它加入这里。仅有 MySQL 执行记录还不能阻止业务库重复写。
+# MERGE 约束后，再把它加入这里。仅有 PostgreSQL 执行记录还不能阻止业务库重复写。
 BUSINESS_IDEMPOTENT_TOOLS = frozenset({"add_person"})
+
+
+def _serializable_tool_value(value):
+    """在 Tool 边界把 Neo4j 时间值转换成可持久化的普通数据。
+
+    Tool 结果同时进入 PostgreSQL JSONB 和 LangGraph Checkpointer。Neo4j 的
+    DateTime 不是 Python datetime，也不能被这两套序列化器直接处理。转换
+    必须发生在审计落库及写入图状态之前，保证重试读取到相同的 JSON 结构。
+    不认识的对象直接报错，避免把任意对象的 repr 悄悄写进业务数据。
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (Neo4jDateTime, Neo4jDate, Neo4jTime, Neo4jDuration)):
+        return str(value)
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _serializable_tool_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serializable_tool_value(item) for item in value]
+    raise TypeError(f"Tool 结果包含不能序列化的类型：{type(value).__name__}")
 
 
 def _successful_results_by_step(records: list[dict]) -> dict[str, dict]:
@@ -40,6 +68,39 @@ def _successful_results_by_step(records: list[dict]) -> dict[str, dict]:
         and isinstance(record.get("step_id"), str)
         and isinstance(record.get("result"), dict)
     }
+
+
+def _missing_person_probe_steps(
+    call: dict,
+    tool_calls: list[dict],
+    records: list[dict],
+    missing_dependencies: list[str],
+) -> list[str]:
+    """识别“查无此人后新增”的预检查，不能把其他失败依赖当作可忽略。
+
+    只允许新增人物依赖同名的精确查询，且查询明确返回 NOT_FOUND。模糊查询、
+    网络错误、权限失败以及其他 Tool 的依赖仍须阻断新增。
+    """
+    if call.get("tool") != "add_person" or not missing_dependencies:
+        return []
+    name = call.get("args", {}).get("name")
+    if not isinstance(name, str) or not name.strip():
+        return []
+    calls_by_step = {item.get("step_id"): item for item in tool_calls}
+    records_by_step = {item.get("step_id"): item for item in records}
+    for dependency in missing_dependencies:
+        lookup = calls_by_step.get(dependency, {})
+        lookup_args = lookup.get("args", {})
+        record = records_by_step.get(dependency, {})
+        if (
+            lookup.get("tool") != "find_person"
+            or lookup_args.get("search_mode") != "exact"
+            or lookup_args.get("query") != name
+            or record.get("status") != ToolStepStatus.FAILED.value
+            or record.get("error_code") != ToolErrorCode.NOT_FOUND.value
+        ):
+            return []
+    return missing_dependencies
 
 
 def _record(
@@ -122,7 +183,7 @@ def _claim(state: AgentState, call: dict, resolved_args: dict) -> ExecutionClaim
 
     三套状态不要混淆：
 
-    * MySQL ``running/success/failed``：这次调用在历史上执行到了哪里；
+    * PostgreSQL ``running/success/failed``：这次调用在历史上执行到了哪里；
     * Claim ``EXECUTE/WAIT/IN_PROGRESS``：当前进程现在应该采取什么动作；
     * Graph ``SUCCESS/FAILED/SKIPPED``：本轮 Agent 如何记录该步骤。
     """
@@ -146,7 +207,7 @@ def _invoke_tool_with_retry(tool_name: str, runtime_args: dict) -> tuple[dict, i
     result: dict = {"success": False, "message": "Tool 未返回结果"}
 
     for attempt in range(2):
-        result = execute_tool(tool_name, **runtime_args)
+        result = _serializable_tool_value(execute_tool(tool_name, **runtime_args))
         if result.get("success"):
             break
 
@@ -277,7 +338,10 @@ def execute_tools(state: AgentState) -> Command:
             for dependency in call.get("depends_on", [])
             if dependency not in results_by_step
         ]
-        if missing_dependencies:
+        missing_person_probes = _missing_person_probe_steps(
+            call, tool_calls, records, missing_dependencies
+        )
+        if missing_dependencies and not missing_person_probes:
             _append_problem(
                 records,
                 errors,
@@ -287,6 +351,30 @@ def execute_tools(state: AgentState) -> Command:
                 status=ToolStepStatus.SKIPPED,
             )
             continue
+
+        if call["tool"] == "add_person" and not missing_person_probes:
+            # 精确查询已经找到同名人物时，不执行模型仍然规划出的新增步骤。
+            # 这使预检查同时覆盖“存在”和“不存在”两个分支。
+            found_probes = [
+                dependency
+                for dependency in call.get("depends_on", [])
+                if any(
+                    candidate.get("step_id") == dependency
+                    and candidate.get("tool") == "find_person"
+                    and candidate.get("args", {}).get("search_mode") == "exact"
+                    and candidate.get("args", {}).get("query") == call.get("args", {}).get("name")
+                    for candidate in tool_calls
+                )
+                and dependency in results_by_step
+            ]
+            if found_probes:
+                _append_problem(
+                    records, errors, call,
+                    message=f"步骤 {step_id} 已跳过：同名人物已存在",
+                    error_code=ToolErrorCode.CONFLICT,
+                    status=ToolStepStatus.SKIPPED,
+                )
+                continue
 
         try:
             resolved_args = _resolve_and_validate_args(call, results_by_step)
@@ -363,6 +451,20 @@ def execute_tools(state: AgentState) -> Command:
             _save_success(
                 state, call, claim, result, latency_ms, records, errors, results_by_step
             )
+            if missing_person_probes:
+                # 查无此人是新增的预期条件。新增成功后，从本轮观察结果中移除
+                # 这条“失败”，但 PostgreSQL tool_execution 仍保存原始查询审计。
+                records[:] = [
+                    record for record in records
+                    if record.get("step_id") not in missing_person_probes
+                ]
+                errors[:] = [
+                    error for error in errors
+                    if not any(
+                        error.startswith(f"步骤 {dependency} 失败：")
+                        for dependency in missing_person_probes
+                    )
+                ]
         else:
             _save_failure(state, call, claim, result, latency_ms, records, errors)
 

@@ -1,14 +1,14 @@
 """Application-level idempotency repository for Tool execution.
 
-The executor depends on this small API instead of MySQL details. A PostgreSQL
-adapter can later implement the same contract without changing the Agent graph.
+The executor depends on this small API instead of PostgreSQL details. The storage
+implementation can change without changing the Agent graph.
 """
 
 from dataclasses import dataclass
 from uuid import uuid4
 
 from backend.agent.execution_enums import ExecutionClaimAction, ToolExecutionStatus
-from backend.db.mysql_client import (
+from backend.db.postgres_client import (
     finish_tool_execution,
     get_tool_execution,
     try_insert_tool_execution,
@@ -97,7 +97,7 @@ def claim_execution(
         ):
             # 状态1.2：原表中有数据，但是上一次执行超时（或者线程崩溃，执行完毕未修改状态），返回EXECUTE，告诉执行工具节点这一次可以执行工具
             return ExecutionClaim(ExecutionClaimAction.EXECUTE, execution_token=execution_token)
-        # 状态3.1：竞争mysql锁失败，说明其它线程正在执行过程中，返回IN_PROGRESS，本进程不能重复调用 Tool
+        # 状态3.1：条件更新失败，说明其他工作进程仍持有租约，本进程不能重复执行 Tool。
         return ExecutionClaim(ExecutionClaimAction.IN_PROGRESS)
 
     raise RuntimeError(f"未知 Tool 执行状态：{status}")

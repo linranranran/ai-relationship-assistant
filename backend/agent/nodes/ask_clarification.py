@@ -193,7 +193,9 @@ def _resume_after_free_text(state: AgentState, resume_value: Any) -> Command:
             "replan_count": state.get("replan_count", 0) + 1,
             "response": "",
         },
-        goto="classify_intent",
+        # 用户补充形成了新的输入，必须重新经过上下文预算和记忆检索，不能直接
+        # 使用中断前的 model_context。
+        goto="prepare_context",
     )
 
 
