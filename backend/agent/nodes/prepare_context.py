@@ -29,7 +29,9 @@ def prepare_context(state: AgentState) -> dict:
             "intent": state.get("intent", ""),
             "tool_results": compact_tool_results(state.get("tool_results", [])),
             "pending_confirmation": state.get("pending_confirmation"),
+            "resolved_reference": state.get("resolved_reference"),
         },
+        resolved_reference=state.get("resolved_reference"),
         checkpoint_recent_messages=state.get("recent_messages", []),
         checkpoint_summary=state.get("conversation_summary", {}),
     )

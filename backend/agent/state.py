@@ -1,7 +1,7 @@
 # ============================================================
 # Agent 状态定义
 # ============================================================
-
+from langgraph.graph import MessagesState
 from typing import List, Optional, TypedDict
 
 
@@ -24,6 +24,13 @@ class AgentState(TypedDict):
     model_context: List[dict]           # 本轮允许发送给模型的受控上下文
     context_stats: dict                 # Token、裁剪和降级统计
     memory_write_candidates: List[dict] # 尚未完成证据/确认校验的长期事实候选
+    person_focus: Optional[dict]         # 上轮唯一且已验证的人物；由 Tool 结果产生
+    person_focus_candidates: List[dict]  # 上轮多个候选，用于代词追问时澄清
+    person_focus_candidates_owner_id: str
+    person_focus_candidates_conversation_id: str
+    resolved_reference: dict             # 本轮解析出的可信人物 ID
+    reference_resolution: dict            # 本轮解析方式、候选数或澄清原因
+    pending_reference: Optional[dict]    # 等待用户消除代词歧义
 
     # === 意图分类 ===
     intent: str                        # 识别的意图：ADD_PERSON / QUERY_PERSON / ...

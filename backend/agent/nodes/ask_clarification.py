@@ -50,6 +50,26 @@ def _public_candidate(candidate: dict) -> dict:
 
 def _build_clarification_payload(state: AgentState) -> tuple[dict, dict | None]:
     """优先生成候选选择；没有结构化候选时退化为自由文本补充。"""
+    pending_reference = state.get("pending_reference")
+    if isinstance(pending_reference, dict):
+        candidates = pending_reference.get("candidates", [])
+        if isinstance(candidates, list) and candidates:
+            return ({
+                "interaction_type": "CLARIFICATION",
+                "clarification_type": "CANDIDATE_SELECTION",
+                "question": "你说的‘他/她’是哪位人物？",
+                "candidates": [
+                    {"id": item["person_id"], "label": item["name"], "description": ""}
+                    for item in candidates if isinstance(item, dict)
+                    and item.get("person_id") and item.get("name")
+                ],
+            }, None)
+        return ({
+            "interaction_type": "CLARIFICATION",
+            "clarification_type": "FREE_TEXT",
+            "question": "你说的‘他/她’是谁？请提供姓名或更具体的信息。",
+            "candidates": [],
+        }, None)
     ambiguous = _ambiguous_record(state)
     if ambiguous:
         candidates = ambiguous["result"]["data"]["candidates"]
@@ -192,9 +212,46 @@ def _resume_after_free_text(state: AgentState, resume_value: Any) -> Command:
             "replan_feedback": {},
             "replan_count": state.get("replan_count", 0) + 1,
             "response": "",
+            "pending_reference": None,
+            "reference_resolution": {"status": "SKIP", "reason": "user_supplied_new_information"},
         },
         # 用户补充形成了新的输入，必须重新经过上下文预算和记忆检索，不能直接
         # 使用中断前的 model_context。
+        goto="resolve_person_reference",
+    )
+
+
+def _resume_after_reference_choice(state: AgentState, resume_value: Any) -> Command:
+    """只能使用中断时展示过的候选，禁止前端提交任意 person_id。"""
+    pending = state.get("pending_reference") or {}
+    selected_id = resume_value.get("candidate_id") if isinstance(resume_value, dict) else None
+    if (pending.get("owner_id") != state["user_id"]
+            or pending.get("conversation_id") != state.get("conversation_id", "default")):
+        return Command(update={"response": "人物选择已失效，请重新提问。"}, goto=END)
+    selected = next(
+        (item for item in pending.get("candidates", [])
+         if isinstance(item, dict) and item.get("person_id") == selected_id),
+        None,
+    )
+    if selected is None:
+        return Command(update={"response": "人物选择无效，请重新提问。"}, goto=END)
+    focus = {
+        **selected,
+        "owner_id": state["user_id"],
+        "conversation_id": state.get("conversation_id", "default"),
+        "source_request_id": state["request_id"],
+    }
+    return Command(
+        update={
+            "person_focus": focus,
+            "resolved_reference": focus,
+            "pending_reference": None,
+            "execution_errors": [],
+            "reference_resolution": {
+                "status": "RESOLVED", "method": "user_selected_candidate",
+                "person_id": selected["person_id"],
+            },
+        },
         goto="prepare_context",
     )
 
@@ -232,5 +289,8 @@ def ask_clarification(state: AgentState) -> Command:
                 goto=END,
             )
         return _resume_after_candidate(state, ambiguous, selected)
+
+    if isinstance(state.get("pending_reference"), dict) and state["pending_reference"].get("candidates"):
+        return _resume_after_reference_choice(state, resume_value)
 
     return _resume_after_free_text(state, resume_value)

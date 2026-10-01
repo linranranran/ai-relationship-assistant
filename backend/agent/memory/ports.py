@@ -89,6 +89,8 @@ class LongTermMemoryStore(Protocol):
         conversation_id: str,
         query: str,
         limit: int,
+        person_id: str | None = None,
+        category: str | None = None,
     ) -> tuple[MemoryFact, ...]: ...
 
     def save_candidates(
@@ -203,6 +205,8 @@ class NoOpLongTermMemoryStore:
         conversation_id: str,
         query: str,
         limit: int,
+        person_id: str | None = None,
+        category: str | None = None,
     ) -> tuple[MemoryFact, ...]:
         return ()
 

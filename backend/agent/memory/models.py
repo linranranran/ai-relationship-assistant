@@ -144,6 +144,7 @@ class ContextStats:
     input_budget: int
     estimated_input_tokens: int
     selected_message_count: int = 0
+    selected_message_ids: list[str] = field(default_factory=list)
     dropped_message_count: int = 0
     selected_memory_count: int = 0
     dropped_memory_count: int = 0
@@ -151,6 +152,8 @@ class ContextStats:
     memory_degraded: bool = False
     degradation_reasons: list[str] = field(default_factory=list)
     current_input_over_budget: bool = False
+    summary_included: bool = False
+    resolved_person_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

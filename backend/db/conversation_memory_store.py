@@ -290,7 +290,8 @@ class PostgresConversationMemoryStore:
     # ---------- 长期事实 ----------
 
     def search(
-        self, *, owner_id: str, conversation_id: str, query: str, limit: int
+        self, *, owner_id: str, conversation_id: str, query: str, limit: int,
+        person_id: str | None = None, category: str | None = None,
     ) -> tuple[MemoryFact, ...]:
         """小数据量关键词检索，只返回已确认、未过期、有完整证据的最新事实。
 
@@ -300,11 +301,21 @@ class PostgresConversationMemoryStore:
         """
         _require_identity(owner_id, conversation_id)
         _validate_limit(limit, AGENT_MEMORY_RETRIEVAL_LIMIT)
-        if limit == 0 or not query.strip():
+        if limit == 0 or (not query.strip() and not person_id):
             return ()
+        # SQL 条件只由固定片段拼接；person_id/category 始终是绑定参数。
+        person_filter = " AND person_id = %s" if person_id else ""
+        # 关系事实的类别带稳定 UUID 后缀（relationship:<uuid>），不是字面值 relationship。
+        category_filter = (
+            " AND category LIKE %s" if category == "relationship"
+            else " AND category = %s" if category else ""
+        )
+        filters = tuple(value for value in (
+            person_id, "relationship:%" if category == "relationship" else category,
+        ) if value)
         with get_postgres_connection() as connection:
             rows = connection.execute(
-                """
+                f"""
                 WITH latest AS (
                     SELECT DISTINCT ON (person_id, category)
                            fact_id, owner_id, person_id, category, value, status,
@@ -313,6 +324,7 @@ class PostgresConversationMemoryStore:
                     FROM memory_fact
                     WHERE owner_id = %s AND status = 'active'
                       AND (valid_to IS NULL OR valid_to > CURRENT_TIMESTAMP)
+                      {person_filter}{category_filter}
                     ORDER BY person_id, category, version DESC
                 )
                 SELECT fact_id, owner_id, person_id, category, value, status,
@@ -334,10 +346,16 @@ class PostgresConversationMemoryStore:
                 """,
                 # 这是关键词降级检索的候选池，不是最终返回数量。数据规模变大后
                 # 应由向量/全文索引提供 fact_id，再执行同样的权限回查。
-                (owner_id, max(100, limit * 20)),
+                (owner_id, *filters, max(100, limit * 20)),
             ).fetchall()
         # 人物可能已从 Neo4j 删除；不把失效人物的事实发给模型。
         owned = self._owned_person_ids(owner_id, {row["person_id"] for row in rows})
+        if person_id:
+            # 人物身份已由会话焦点确定，不能再凭“他的爱好”与其他人的文本打分。
+            return tuple(
+                _fact_from_row(row) for row in rows
+                if row["person_id"] in owned
+            )[:limit]
         ranked = sorted(
             (
                 (_fact_relevance_score(query, row), row)

@@ -12,6 +12,7 @@ from backend.agent.memory.models import (
     MemoryWriteCandidate,
 )
 from backend.agent.memory.runtime import MemoryRuntime, get_memory_runtime
+from backend.agent.memory.reference_resolution import derive_focus, resolve_reference
 from backend.agent.state import AgentState
 
 
@@ -86,9 +87,24 @@ def finalize_memory(state: AgentState) -> dict:
         assistant_message,
         limit=runtime.settings.recent_message_limit,
     )
+    focus, focus_candidates = derive_focus(
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+        request_id=request_id,
+        tool_results=state.get("tool_results", []),
+    )
+    # 代词追问未产生新的单人 Tool 结果时可以继续沿用原焦点；显式切换人物
+    # 或一次涉及多人时不沿用旧人物，避免下一轮把“他”指回前一个人。
+    if not focus_candidates and resolve_reference(state)["status"] == "RESOLVED":
+        focus = state.get("person_focus")
+        focus_candidates = state.get("person_focus_candidates", [])
     return {
         "recent_messages": recent,
         "memory_write_candidates": [asdict(candidate) for candidate in candidates],
+        "person_focus": focus,
+        "person_focus_candidates": focus_candidates,
+        "person_focus_candidates_owner_id": owner_id,
+        "person_focus_candidates_conversation_id": conversation_id,
     }
 
 

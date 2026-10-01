@@ -106,6 +106,39 @@ def plan_tasks(state: AgentState) -> Command:
     """
     try:
         logger.info(f"3、进入到计划任务节点，state= {state}")
+        reference = state.get("resolved_reference")
+        if (isinstance(reference, dict)
+                and reference.get("owner_id") == state["user_id"]
+                and reference.get("conversation_id") == state.get("conversation_id", "default")
+                and isinstance(reference.get("person_id"), str)
+                and state.get("intent") in {"QUERY_PERSON", "LIST_RELATIONS", "QUERY_KINSHIP"}):
+            # 对已验证的单人代词追问，直接使用服务端 ID 构造只读计划。
+            # 不再让模型根据“他”猜姓名或编造 ID。
+            person_id = reference["person_id"]
+            if state["intent"] == "QUERY_KINSHIP":
+                raw_plan = [
+                    {"step_id": "resolved_path", "tool": "query_relation_path",
+                     "args": {"target_person_id": person_id}},
+                    {"step_id": "resolved_title", "tool": "get_kinship_title",
+                     "depends_on": ["resolved_path"],
+                     "args": {"target_person_id": person_id,
+                              "relation_path": {"$ref": {"step_id": "resolved_path", "path": "data"}}}},
+                ]
+            elif state["intent"] == "LIST_RELATIONS":
+                raw_plan = [{"step_id": "resolved_relations", "tool": "list_relations",
+                             "args": {"person_id": person_id}}]
+            elif "关系" in state.get("user_input", ""):
+                raw_plan = [{"step_id": "resolved_path", "tool": "query_relation_path",
+                             "args": {"target_person_id": person_id}}]
+            else:
+                raw_plan = [{"step_id": "resolved_person", "tool": "get_person_detail",
+                             "args": {"person_id": person_id}}]
+            tool_calls = sanitize_model_tool_calls(
+                raw_plan,
+                request_id=state["request_id"],
+                plan_version=state.get("replan_count", 0),
+            )
+            return _ready_for_execution(tool_calls)
         model_plan = _request_model_plan(state, _build_planning_prompt(state))
         tool_calls = sanitize_model_tool_calls(
             model_plan.get("tool_calls", []),

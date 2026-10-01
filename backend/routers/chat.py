@@ -270,6 +270,10 @@ async def chat(
         model_context=[],
         context_stats={},
         retrieved_memories=[],
+        # 会话焦点留在 Checkpoint；本轮解析结果和待澄清请求必须重新计算。
+        resolved_reference={},
+        reference_resolution={},
+        pending_reference=None,
         response="",
     )
     try:

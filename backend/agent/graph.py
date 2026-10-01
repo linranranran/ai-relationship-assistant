@@ -46,9 +46,12 @@ def build_agent_graph(checkpointer=None):
     finalize_memory       → END
     ask_clarification     → execute_tools / prepare_context / END（interrupt 后恢复）
     """
+    from backend.agent.nodes.resolve_person_reference import resolve_person_reference
+
     graph = StateGraph(AgentState)
 
     # ── 注册节点 ──
+    graph.add_node("resolve_person_reference", resolve_person_reference)
     graph.add_node("prepare_context", prepare_context)
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("extract_info", extract_info)
@@ -61,7 +64,7 @@ def build_agent_graph(checkpointer=None):
     graph.add_node("finalize_memory", finalize_memory)
 
     # ── 入口 ──
-    graph.set_entry_point("prepare_context")
+    graph.set_entry_point("resolve_person_reference")
     graph.add_edge("prepare_context", "classify_intent")
     graph.add_edge("generate_response", "finalize_memory")
 

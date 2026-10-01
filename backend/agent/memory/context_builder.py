@@ -26,10 +26,11 @@ def build_context_bundle(
     runtime: MemoryRuntime,
     system_instructions: str = "",
     compact_execution: dict[str, Any] | None = None,
+    resolved_reference: dict[str, Any] | None = None,
     checkpoint_recent_messages: list[dict] | None = None,
     checkpoint_summary: dict[str, Any] | None = None,
 ) -> ContextBundle:
-    """按固定优先级选择摘要、长期事实和最近消息。
+    """优先保留最近的完整问答，再按相关性补充长期事实与旧摘要。
 
     当前用户输入永远保留。若它单独就超过预算，函数不会偷偷截断用户原话，而是
     设置 ``current_input_over_budget``，交给上层决定拒绝、拆分还是使用大窗口模型。
@@ -48,11 +49,20 @@ def build_context_bundle(
         fallback=checkpoint_summary or {},
         degradation_reasons=degradation_reasons,
     )
+    trusted_reference = resolved_reference if (
+        isinstance(resolved_reference, dict)
+        and resolved_reference.get("owner_id") == owner_id
+        and resolved_reference.get("conversation_id") == conversation_id
+        and isinstance(resolved_reference.get("person_id"), str)
+        and resolved_reference.get("person_id")
+    ) else None
     memories = _load_memories(
         runtime,
         owner_id=owner_id,
         conversation_id=conversation_id,
         query=current_input,
+        person_id=trusted_reference["person_id"] if trusted_reference else None,
+        category=_memory_category_for_question(current_input) if trusted_reference else None,
         degradation_reasons=degradation_reasons,
     )
     recent = _load_recent_messages(
@@ -90,39 +100,55 @@ def build_context_bundle(
     current_over_budget = fixed_tokens > budget
     used_tokens = fixed_tokens
 
-    summary_message = _summary_message(summary)
-    selected_summary: dict[str, Any] = {}
-    if summary_message is not None:
-        cost = runtime.token_counter.count_messages([summary_message])
-        if used_tokens + cost <= budget:
-            selected_summary = summary
-            used_tokens += cost
+    recent_limited = recent[-runtime.settings.recent_message_limit :]
+    turns = _complete_turns(recent_limited)
+    selected_turns_reversed: list[tuple[MemoryMessage, MemoryMessage]] = []
+    # 最靠近当前问题的两轮是指代消解的基本上下文，不允许旧摘要抢占它们。
+    for turn in reversed(turns[-2:]):
+        cost = runtime.token_counter.count_messages([_message_to_prompt_dict(m) for m in turn])
+        if used_tokens + cost > budget:
+            degradation_reasons.append("recent_turn_over_budget")
+            break
+        selected_turns_reversed.append(turn)
+        used_tokens += cost
 
     selected_memories: list[dict[str, Any]] = []
     for memory in memories:
-        memory_dict = asdict(memory)
-        message = {
-            "role": "user",
-            "content": _untrusted_data_text({"memory_fact": memory_dict}),
-            "context_type": "long_term_memory",
-        }
-        cost = runtime.token_counter.count_messages([message])
-        if used_tokens + cost > budget:
+        candidate = selected_memories + [asdict(memory)]
+        candidate_message = _memory_message(candidate)
+        cost = runtime.token_counter.count_messages([candidate_message])
+        current_cost = (
+            runtime.token_counter.count_messages([_memory_message(selected_memories)])
+            if selected_memories else 0
+        )
+        if used_tokens - current_cost + cost > budget:
             continue
-        selected_memories.append(memory_dict)
-        used_tokens += cost
+        selected_memories = candidate
+        used_tokens = used_tokens - current_cost + cost
 
-    # Repository 按时间升序返回最容易用于展示；预算选择则必须从最新消息开始。
-    recent_limited = recent[-runtime.settings.recent_message_limit :]
-    selected_recent_reversed: list[dict[str, Any]] = []
-    for message in reversed(recent_limited):
-        message_dict = _message_to_prompt_dict(message)
-        cost = runtime.token_counter.count_messages([message_dict])#计算这条消息单独消耗多少 token。
-        if used_tokens + cost > budget:#如果加上这条消息会超过预算，就跳过它，不加入选中列表，也不增加 used_tokens。
-            continue
-        selected_recent_reversed.append(message_dict)
-        used_tokens += cost
-    selected_recent = list(reversed(selected_recent_reversed))#selected_recent_reversed 里保存的是从最近开始，尽可能多的、总 token 不超过预算的消息。
+    # 旧对话也按完整轮次取舍。遇到放不下的轮次便停止，避免出现时间缺口。
+    if len(selected_turns_reversed) == min(2, len(turns)):
+        for turn in reversed(turns[:max(0, len(turns) - 2)]):
+            cost = runtime.token_counter.count_messages([_message_to_prompt_dict(m) for m in turn])
+            if used_tokens + cost > budget:
+                break
+            selected_turns_reversed.append(turn)
+            used_tokens += cost
+    selected_turns = list(reversed(selected_turns_reversed))
+    selected_recent_messages = [message for turn in selected_turns for message in turn]
+    selected_recent = [_message_to_prompt_dict(message) for message in selected_recent_messages]
+
+    # 摘要可覆盖最近消息，但同一事实无需在提示词里出现两次。
+    selected_summary = _summary_without_recent(
+        summary, {message.message_id for message in selected_recent_messages}
+    )
+    summary_message = _summary_message(selected_summary)
+    if summary_message is not None:
+        cost = runtime.token_counter.count_messages([summary_message])
+        if used_tokens + cost <= budget:
+            used_tokens += cost
+        else:
+            selected_summary = {}
 
     model_messages: list[dict[str, Any]] = []
     if system_instructions:
@@ -134,23 +160,19 @@ def build_context_bundle(
     if selected_summary:
         model_messages.append(_summary_message(selected_summary))
     if selected_memories:
-        model_messages.append(
-            {
-                "role": "user",
-                "content": _untrusted_data_text({"relevant_memories": selected_memories}),
-                "context_type": "long_term_memory",
-            }
-        )
+        model_messages.append(_memory_message(selected_memories))
     model_messages.extend(selected_recent)
     model_messages.append(current_message)
 
     dropped_messages = max(0, len(recent_limited) - len(selected_recent))
     dropped_memories = max(0, len(memories) - len(selected_memories))
+    used_tokens = runtime.token_counter.count_messages(model_messages)
     ratio = used_tokens / budget if budget else 1.0
     stats = ContextStats(
         input_budget=budget,
         estimated_input_tokens=used_tokens,
         selected_message_count=len(selected_recent),
+        selected_message_ids=[message.message_id for message in selected_recent_messages],
         dropped_message_count=dropped_messages,
         selected_memory_count=len(selected_memories),
         dropped_memory_count=dropped_memories,
@@ -158,6 +180,8 @@ def build_context_bundle(
         memory_degraded=bool(degradation_reasons),
         degradation_reasons=degradation_reasons,
         current_input_over_budget=current_over_budget,
+        summary_included=bool(selected_summary),
+        resolved_person_id=trusted_reference["person_id"] if trusted_reference else None,
     )
     return ContextBundle(
         messages=model_messages,
@@ -199,6 +223,8 @@ def _load_memories(
     owner_id: str,
     conversation_id: str,
     query: str,
+    person_id: str | None,
+    category: str | None,
     degradation_reasons: list[str],
 ) -> tuple[MemoryFact, ...]:
     try:
@@ -207,6 +233,8 @@ def _load_memories(
             conversation_id=conversation_id,
             query=query,
             limit=runtime.settings.memory_retrieval_limit,
+            person_id=person_id,
+            category=category,
         )
     except Exception:
         degradation_reasons.append("long_term_memory_unavailable")
@@ -214,6 +242,15 @@ def _load_memories(
     if not runtime.long_term_store.persistent:
         degradation_reasons.append("long_term_memory_not_configured")
     return memories[: runtime.settings.memory_retrieval_limit]
+
+
+def _memory_category_for_question(question: str) -> str | None:
+    """只有可明确映射的类别才过滤；其他问题保留该人物的全部合格事实。"""
+    if any(word in question for word in ("爱好", "兴趣", "职业", "工作", "学校", "学历", "性格", "资料")):
+        return "person_profile"
+    if any(word in question for word in ("关系", "亲戚", "称呼")):
+        return "relationship"
+    return None
 
 
 def _load_recent_messages(
@@ -257,6 +294,45 @@ def _messages_from_checkpoint(items: list[dict]) -> tuple[MemoryMessage, ...]:
 
 def _message_to_prompt_dict(message: MemoryMessage) -> dict[str, Any]:
     return {"role": message.role.value, "content": message.content}
+
+
+def _complete_turns(messages: tuple[MemoryMessage, ...]) -> list[tuple[MemoryMessage, MemoryMessage]]:
+    """只有同一 request_id 的 user→assistant 才能作为一轮进入模型。"""
+    turns: list[tuple[MemoryMessage, MemoryMessage]] = []
+    index = 0
+    while index + 1 < len(messages):
+        user, assistant = messages[index:index + 2]
+        if (user.role == MemoryRole.USER and assistant.role == MemoryRole.ASSISTANT
+                and user.request_id == assistant.request_id):
+            turns.append((user, assistant))
+            index += 2
+        else:
+            index += 1
+    return turns
+
+
+def _memory_message(memories: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "role": "user",
+        "content": _untrusted_data_text({"relevant_memories": memories}),
+        "context_type": "long_term_memory",
+    }
+
+
+def _summary_without_recent(summary: dict[str, Any], recent_ids: set[str]) -> dict[str, Any]:
+    """只生成发送给模型的投影；不能修改数据库或 Checkpoint 中的权威摘要。"""
+    projected: dict[str, Any] = {}
+    for section, entries in summary.items():
+        if not isinstance(entries, list):
+            continue
+        kept = [
+            entry for entry in entries
+            if isinstance(entry, dict)
+            and not recent_ids.intersection(entry.get("evidence_message_ids", []))
+        ]
+        if kept:
+            projected[section] = kept
+    return projected
 
 
 def _summary_message(summary: dict[str, Any]) -> dict[str, Any] | None:
