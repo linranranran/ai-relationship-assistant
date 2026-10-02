@@ -21,7 +21,6 @@ def classify_intent(state: AgentState) -> Command:
     user_input = state["user_input"]
     update = {}
 
-    logger.info(f"2、进入到识别用户意图节点，state: {state}")
     if not user_input or not user_input.strip():
         update["intent"] = "UNCLEAR"
         update["intent_confidence"] = 0.0

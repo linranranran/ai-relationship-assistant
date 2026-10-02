@@ -18,7 +18,9 @@ def extract_info(state: AgentState) -> Command:
         response_str = chat(llm_client, EXTRACT_INFO_PROMPT, [{"role": "user", "content": user_input}])
         response = json.loads(response_str)
         update["extracted_info"] = response
-    except Exception as e:
-        update["extracted_info"] = {"message": f"提取信息失败：{str(e)}"}
+    except json.JSONDecodeError:
+        return Command(update={"execution_errors": ["提取结果格式不正确，请补充更明确的信息"]},
+                       goto="ask_clarification")
+    # 模型/网络等系统异常继续抛出，以便从 extract_info 原节点恢复。
 
     return Command(update=update, goto="plan_tasks")

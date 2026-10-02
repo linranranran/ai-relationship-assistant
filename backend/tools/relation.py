@@ -2,7 +2,7 @@
 # 关系管理 Tools
 # ============================================================
 
-from backend.tools.person import tool_response
+from backend.tools.person import tool_response, write_failure
 import logging
 from backend.db import neo4j_client
 from backend.db.neo4j_client import get_neo4j_driver
@@ -41,11 +41,16 @@ def add_relation(**kwargs) -> dict:
     try:
         # 2.2 写入 Neo4j（本地 Docker，基本不炸）
         driver = get_neo4j_driver()
-        relation = neo4j_client.add_relation(driver, from_person_id, to_person_id, relation_type, owner_id ,kwargs.get("through_person_id" , None),kwargs.get("note" , None))
+        key_args = {"idempotency_key": kwargs["idempotency_key"]} if "idempotency_key" in kwargs else {}
+        # key 只由服务端执行器注入；直接旧调用省略 key 时保持原有签名兼容。
+        relation = neo4j_client.add_relation(
+            driver, from_person_id, to_person_id, relation_type, owner_id,
+            kwargs.get("through_person_id"), kwargs.get("note"), **key_args,
+        )
         return tool_response(msg="创建成功", success=True, data=relation)
     except Exception as e:
         logger.error(f"创建人物关系失败: {str(e)}", exc_info=True)
-        return tool_response(msg=f"创建人物关系失败: {str(e)}", success=False)
+        return write_failure(e, f"创建人物关系失败: {e}")
     finally:
         if driver is not None:
             driver.close()
@@ -74,23 +79,18 @@ def update_relation(**kwargs) -> dict:
     try:
         # 2.2 写入 Neo4j（本地 Docker，基本不炸）
         driver = get_neo4j_driver()
-        old_relation = neo4j_client.get_relation_by_id(driver, relation_id, owner_id)
-        if old_relation is None:
-            return tool_response(msg="未查询到正确的人物关系，请确认relation_id是否正确", success=False)
-        # 2. 合并：旧值打底，新值覆盖
-        new_type = new_relation_type or old_relation["type"]
-        new_owner = owner_id or old_relation["owner"]
-        new_through_arg = kwargs.get("through_person_id")
-        new_through = new_through_arg if new_through_arg is not None else old_relation["through"]
-        new_note_arg = kwargs.get("note")
-        new_note = new_note_arg if new_note_arg is not None else old_relation["note"]
-
-        neo4j_client.update_relation(driver, relation_id,new_type, new_owner, new_note,new_through)
+        key_args = {"idempotency_key": kwargs["idempotency_key"]} if "idempotency_key" in kwargs else {}
+        # 不在事务外先查旧边：旧请求重放时边可能已被删除，或后来又被修改。
+        # 传入原请求的补丁，由 Neo4j 在回执检查之后合并，摘要始终稳定。
+        neo4j_client.update_relation(
+            driver, relation_id, new_relation_type or None, owner_id,
+            kwargs.get("note"), kwargs.get("through_person_id"), **key_args,
+        )
 
         return tool_response(msg="修改任务关系成功", success=True, data=None)
     except Exception as e:
         logger.error(f"修改人物关系失败: {str(e)}", exc_info=True)
-        return tool_response(msg=f"修改人物关系失败: {str(e)}", success=False)
+        return write_failure(e, f"修改人物关系失败: {e}")
     finally:
         if driver is not None:
             driver.close()
@@ -124,11 +124,12 @@ def delete_relation(**kwargs) -> dict:
     try:
         # 2.2 写入 Neo4j（本地 Docker，基本不炸）
         driver = get_neo4j_driver()
-        neo4j_client.delete_relation(driver, relation_id, owner_id)
+        key_args = {"idempotency_key": kwargs["idempotency_key"]} if "idempotency_key" in kwargs else {}
+        neo4j_client.delete_relation(driver, relation_id, owner_id, **key_args)
         return tool_response(msg="删除人物关系成功", success=True, data=None)
     except Exception as e:
         logger.error(f"删除人物关系失败: {str(e)}", exc_info=True)
-        return tool_response(msg=f"删除人物关系失败: {str(e)}", success=False)
+        return write_failure(e, f"删除人物关系失败: {e}")
     finally:
         if driver is not None:
             driver.close()

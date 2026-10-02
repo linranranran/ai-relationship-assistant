@@ -42,6 +42,16 @@ def get_agent_request(owner_id: str, request_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def has_tool_executions(owner_id: str, request_id: str) -> bool:
+    """检查点丢失时的安全门：存在任何 Tool 记录就不允许重新生成计划。"""
+    with get_postgres_connection() as connection:
+        row = connection.execute(
+            "SELECT EXISTS (SELECT 1 FROM tool_execution "
+            "WHERE owner_id = %s AND request_id = %s) AS found",
+            (owner_id, request_id)).fetchone()
+    return row["found"]
+
+
 def try_restart_failed_agent_request(
     owner_id: str,
     request_id: str,

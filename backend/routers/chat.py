@@ -7,8 +7,14 @@ import logging
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from langgraph.types import Command
+from starlette.concurrency import run_in_threadpool
+from backend.agent.request_recovery import RecoveryConflict, run_or_recover, interrupted_state
+from backend.agent.tracing import request_trace, trace_event
+from backend.db.agent_session_lock import lock_agent_session, SessionBusy
+from backend.db.agent_interaction_store import get_interaction, save_interaction
+from backend.db.agent_request_store import has_tool_executions
 
 from backend.auth import get_current_user
 from backend.models.schemas import (
@@ -165,16 +171,26 @@ def _saved_chat_response(response_data: dict | None) -> ChatResponse:
 async def chat_endpoint(
     request: ChatRequest,
     http_response: Response,
+    http_request: Request,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     current_user: dict = Depends(get_current_user),
 ):
-    """HTTP 入口强制要求前端提供 Idempotency-Key。"""
-    return await chat(
-        request,
-        current_user=current_user,
-        http_response=http_response,
-        idempotency_key=idempotency_key,
-    )
+    """只受理并持久化，不在 HTTP 连接里运行图；进度另行 GET SSE 订阅。"""
+    from backend.db.agent_stream_store import accept_chat, TaskConflict
+    from backend.routers.stream import task_response
+    request_id = _normalize_request_id(idempotency_key)
+    # 身份只来自鉴权结果，不能把 token、密码或整个用户对象写入任务表。
+    user_context = {key: current_user[key] for key in ("user_id", "self_person_id", "phone") if key in current_user}
+    try:
+        task = await run_in_threadpool(accept_chat, current_user["user_id"], request_id,
+                                      derive_thread_id(current_user["user_id"]), request.message, user_context)
+    except TaskConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if task["status"] in {"queued", "running"}:
+        http_response.status_code = 202
+    from backend.agent.stream_runtime import schedule_accepted
+    schedule_accepted(http_request, task)
+    return task_response(task)
 
 
 async def chat(
@@ -183,6 +199,25 @@ async def chat(
     http_response: Response | None = None,
     idempotency_key: str | None = None,
 ):
+    # 图/数据库/模型均为同步调用，放入有界线程池，避免阻塞整个 ASGI 事件循环。
+    # 内部调用保留原有不落库的兼容入口；HTTP 路由始终要求 request_id。
+    def execute():
+        if idempotency_key is None:
+            return _chat_sync(request, current_user, http_response, None)
+        request_id = _normalize_request_id(idempotency_key)
+        thread_id = derive_thread_id(current_user["user_id"])
+        try:
+            with request_trace(request_id, thread_id), lock_agent_session(thread_id):
+                trace_event("request.start")
+                return _chat_sync(request, current_user, http_response, request_id)
+        except SessionBusy as exc:
+            # 新 request_id 可能尚未入库，不能伪造 RUNNING 让浏览器查询不存在的记录。
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return await run_in_threadpool(execute)
+
+
+def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
+               *, graph_override=None, on_claim=None, stale_after_seconds=None):
     """
     主对话接口。
 
@@ -220,6 +255,7 @@ async def chat(
                 request_id=context.request_id,
                 thread_id=thread_id,
                 message=request.message,
+                **({"stale_after_seconds": stale_after_seconds} if stale_after_seconds is not None else {}),
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -228,7 +264,15 @@ async def chat(
             raise HTTPException(status_code=503, detail="请求状态服务暂不可用") from exc
 
         if claim.action == AgentRequestAction.RETURN_RESPONSE:
-            return _saved_chat_response(claim.response)
+            saved = _saved_chat_response(claim.response)
+            prompt = saved.confirmation or saved.clarification
+            receipt = get_interaction(context.owner_id, prompt.interrupt_id) if prompt else None
+            if not receipt or receipt["request_id"] != context.request_id:
+                return saved
+            # 覆盖“答案已提交、进程却在 claim_resume 之前崩溃”的窗口。
+            # 原 /chat 重试也能重放服务端保存的答案，而不是再次弹出旧问题。
+            claim = claim_agent_resume(owner_id=context.owner_id, request_id=context.request_id,
+                                      **({"stale_after_seconds": stale_after_seconds} if stale_after_seconds is not None else {}))
         if claim.action == AgentRequestAction.IN_PROGRESS:
             if http_response is not None:
                 http_response.status_code = status.HTTP_202_ACCEPTED
@@ -239,6 +283,8 @@ async def chat(
             )
         if not claim.execution_token:
             raise HTTPException(status_code=500, detail="请求已获得执行权但缺少执行令牌")
+        if on_claim:
+            on_claim(claim.execution_token)
 
     initial_state = AgentState(
         user_input=request.message,
@@ -258,6 +304,8 @@ async def chat(
         execution_errors=[],
         retry_count=0,
         next_tool_index=0,
+        resume_execution=False,
+        completed_mutations=[],
         execution_decision="",
         replan_count=0,
         replan_feedback={},
@@ -277,15 +325,31 @@ async def chat(
         response="",
     )
     try:
-        final_state = _runtime_graph().invoke(
-            initial_state,
-            config=_graph_config(context.owner_id),
-        )
+        graph = graph_override or _runtime_graph()
+        if request_idempotency_enabled:
+            def find_answer(interrupt_id):
+                receipt = get_interaction(context.owner_id, interrupt_id)
+                if receipt and receipt["request_id"] == context.request_id:
+                    return receipt["answer"]
+                return None
+            trace_event("request.recover" if claim.is_retry else "request.execute")
+            final_state = run_or_recover(
+                graph, _graph_config(context.owner_id), initial_state,
+                is_retry=claim.is_retry, find_answer=find_answer,
+                can_rebuild=lambda: not has_tool_executions(context.owner_id, context.request_id))
+        else:
+            final_state = graph.invoke(initial_state, config=_graph_config(context.owner_id))
         final_state.setdefault("request_id", context.request_id)
         chat_response = _to_chat_response(final_state)
         if chat_response.status == "RUNNING":
             if http_response is not None:
                 http_response.status_code = status.HTTP_202_ACCEPTED
+            if claim is not None and claim.execution_token:
+                # WAIT 已主动 END，本 HTTP 工作进程不再执行；释放请求租约，
+                # 避免下一次合法重试被 running 状态挡住整整一个过期窗口。
+                mark_agent_request_failed(owner_id=context.owner_id,
+                                          request_id=context.request_id,
+                                          error_message="WAIT", execution_token=claim.execution_token)
         elif claim is not None and claim.execution_token:
             save_agent_response(
                 owner_id=context.owner_id,
@@ -293,6 +357,7 @@ async def chat(
                 response=chat_response.model_dump(mode="json"),
                 execution_token=claim.execution_token,
             )
+        trace_event("request.finished", status=chat_response.status)
         return chat_response
     except Exception as exc:
         logger.exception("Agent 请求执行失败: request_id=%s", context.request_id)
@@ -306,24 +371,41 @@ async def chat(
                 )
             except Exception:
                 logger.exception("Agent 请求 failed 状态保存失败")
+        if isinstance(exc, RecoveryConflict):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail="Agent 执行失败，请使用原请求 ID 重试") from exc
 
 
 @router.get("/requests/{request_id}", response_model=ChatResponse)
-async def get_chat_request(
+def get_chat_request(
     request_id: str,
     http_response: Response,
     current_user: dict = Depends(get_current_user),
 ):
     """查询一次 Agent 请求；owner_id 始终来自登录态。"""
     normalized_request_id = _normalize_request_id(request_id)
+    from backend.db.agent_stream_store import load_task
+    from backend.routers.stream import task_response
+    task = load_task(current_user["user_id"], normalized_request_id)
+    if task:
+        if task["status"] in {"queued", "running"}:
+            http_response.status_code = 202
+        return task_response(task)
     record = load_agent_request(current_user["user_id"], normalized_request_id)
     if record is None:
         raise HTTPException(status_code=404, detail="请求不存在")
 
     request_status = record.get("status")
     if request_status in {"completed", "confirmation_required"}:
-        return _saved_chat_response(record.get("response"))
+        saved = _saved_chat_response(record.get("response"))
+        prompt = saved.confirmation or saved.clarification
+        if request_status == "confirmation_required" and prompt:
+            receipt = get_interaction(current_user["user_id"], prompt.interrupt_id)
+            if receipt and receipt["request_id"] == normalized_request_id:
+                # 答案已接收但工作进程尚未取得恢复租约，不能再次显示可改选的旧按钮。
+                return ChatResponse(request_id=normalized_request_id, status="FAILED",
+                                    response="人工答案已保存，恢复尚未完成，请重试原请求继续执行。")
+        return saved
     if request_status == "running":
         http_response.status_code = status.HTTP_202_ACCEPTED
         return ChatResponse(
@@ -338,156 +420,143 @@ async def get_chat_request(
     )
 
 
-@router.post("/resume", response_model=ChatResponse)
-async def resume_chat(
-    request: ResumeAgentRequest,
-    http_response: Response,
-    current_user: dict = Depends(get_current_user),
-):
-    """恢复等待用户确认或澄清的 Agent。
-
-    owner_id 和 thread_id 都由登录态推导，避免恢复到其他用户的检查点。
-    confirmation 提交 ``confirmed``；候选澄清提交 ``candidate_id``；自由文本
-    澄清提交 ``answer``。三者必须且只能出现一个。
-
-    前端调用示例：
-    ``POST /api/chat/resume``
-    ``{"interrupt_id": "响应中的 ID", "candidate_id": "person_123"}``
-    """
-    owner_id = current_user["user_id"]
-    config = _graph_config(owner_id)
-
-    # thread_id 先定位会话，再用 LangGraph 生成的 interrupt_id 定位该会话中
-    # 具体的暂停点。旧弹窗、重复点击和错误 ID 都不能恢复其他中断。
-    snapshot = _runtime_graph().get_state(config)
-    pending_interactions = _pending_interrupt_payloads(snapshot)
-    pending = pending_interactions.get(request.interrupt_id)
-    if pending is None:
-        raise HTTPException(status_code=409, detail="交互信息已失效，请重新发起操作")
-
+def _validate_interaction_answer(pending: dict, answer: dict):
+    """答案类型与当前中断一致，不能把澄清当作高风险操作授权。"""
+    if answer.get("cancelled") is True:
+        return
     interaction_type = pending.get("interaction_type", "CONFIRMATION")
-    if interaction_type == "CONFIRMATION" and request.confirmed is None:
-        raise HTTPException(status_code=422, detail="当前操作需要 confirmed")
-    if (
-        interaction_type == "CLARIFICATION"
-        and pending.get("clarification_type") == "CANDIDATE_SELECTION"
-        and request.candidate_id is None
-    ):
-        raise HTTPException(status_code=422, detail="当前澄清需要 candidate_id")
-    if (
-        interaction_type == "CLARIFICATION"
-        and pending.get("clarification_type") == "FREE_TEXT"
-        and request.answer is None
-    ):
-        raise HTTPException(status_code=422, detail="当前澄清需要 answer")
+    required = "confirmed" if interaction_type == "CONFIRMATION" else (
+        "candidate_id" if pending.get("clarification_type") == "CANDIDATE_SELECTION" else "answer")
+    if required not in answer:
+        raise HTTPException(status_code=422, detail=f"当前交互需要 {required}")
+    if required == "candidate_id":
+        candidates = pending.get("candidates", [])
+        allowed = {item.get("id") for item in candidates if isinstance(item, dict)}
+        if answer[required] not in allowed:
+            raise HTTPException(status_code=422, detail="请选择当前展示的候选人物")
 
-    request_id = (snapshot.values or {}).get("request_id")
+
+def _handle_interaction(owner_id: str, interrupt_id: str, answer: dict, http_response: Response,
+                        *, graph_override=None, on_claim=None, stale_after_seconds=None):
+    """确认、澄清、取消共享传输恢复机制，业务语义仍由各节点决定。
+
+    人工答案回执先提交，再恢复图。重复点击同一 interrupt_id 必须复用原答案；
+    节点失败后从 checkpoint.next 继续，不会再次消费已经完成的中断。
+    """
+    config = _graph_config(owner_id)
+    graph = graph_override or _runtime_graph()
+    snapshot = graph.get_state(config)
+    pending = _pending_interrupt_payloads(snapshot).get(interrupt_id)
+    receipt = get_interaction(owner_id, interrupt_id)
+    if pending is None and receipt is None:
+        raise HTTPException(status_code=409, detail="交互信息已失效，请重新发起操作")
+    request_id = receipt["request_id"] if receipt else (snapshot.values or {}).get("request_id")
     if not isinstance(request_id, str):
         raise HTTPException(status_code=500, detail="检查点缺少 request_id")
-    resume_claim = claim_agent_resume(owner_id=owner_id, request_id=request_id)
-    if resume_claim.action == AgentRequestAction.RETURN_RESPONSE:
-        return _saved_chat_response(resume_claim.response)
-    if resume_claim.action != AgentRequestAction.EXECUTE or not resume_claim.execution_token:
-        raise HTTPException(status_code=409, detail="该请求正在恢复，请勿重复确认")
-
-    # langgraph官方文档，处理多个中断，传入interrupt_id来resume。https://docs.langchain.com/oss/python/langgraph/interrupts#handling-multiple-interrupts
-    # # Step 1: stream events to drive the run; both parallel nodes hit interrupt() and pause
-    # stream = graph.stream_events({"vals": []}, config, version="v3")
-    # print(stream.interrupts)
-    # # > (Interrupt(value='question_a', id='...'), Interrupt(value='question_b', id='...'))
-    # # Step 2: resume all pending interrupts at once
-    # resume_map = {
-    #     i.id: f"answer for {i.value}" for i in stream.interrupts
-    # }
+    if pending:
+        _validate_interaction_answer(pending, answer)
     try:
-        resume_value = request.model_dump(
-            exclude={"interrupt_id"},
-            exclude_none=True,
-        )
-        final_state = _runtime_graph().invoke(
-            Command(
-                resume={
-                    request.interrupt_id: resume_value
-                }
-            ),
-            config=config,
-        )
-        chat_response = _to_chat_response(final_state)
-        if chat_response.status == "RUNNING":
+        save_interaction(owner_id, request_id, interrupt_id, answer)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    with request_trace(request_id, derive_thread_id(owner_id)):
+        claim = claim_agent_resume(owner_id=owner_id, request_id=request_id,
+                                  **({"stale_after_seconds": stale_after_seconds} if stale_after_seconds is not None else {}))
+        if claim.action == AgentRequestAction.RETURN_RESPONSE:
+            return _saved_chat_response(claim.response)
+        if claim.action != AgentRequestAction.EXECUTE or not claim.execution_token:
             http_response.status_code = status.HTTP_202_ACCEPTED
-        else:
-            save_agent_response(
-                owner_id=owner_id,
-                request_id=request_id,
-                response=chat_response.model_dump(mode="json"),
-                execution_token=resume_claim.execution_token,
-            )
-        return chat_response
-    except Exception as exc:
-        logger.exception("Agent 恢复失败: request_id=%s", request_id)
+            return ChatResponse(request_id=request_id, status="RUNNING", response="原请求正在恢复，请稍后查询状态。")
         try:
-            mark_agent_request_failed(
-                owner_id=owner_id,
-                request_id=request_id,
-                error_message=str(exc),
-                execution_token=resume_claim.execution_token,
-            )
-        except Exception:
-            logger.exception("Agent 恢复 failed 状态保存失败")
-        raise HTTPException(status_code=500, detail="Agent 恢复失败") from exc
+            if on_claim:
+                on_claim(claim.execution_token)
+            # 原中断已被消费时即使 next 为空，也直接复用最终状态；绝不重发旧答案。
+            values = snapshot.values or {}
+            if values.get("request_id") != request_id:
+                raise RecoveryConflict("原请求检查点已被覆盖，无法继续该交互")
+            def find_answer(pending_id):
+                stored = get_interaction(owner_id, pending_id)
+                return stored["answer"] if stored and stored["request_id"] == request_id else None
+            final_state = run_or_recover(graph, config, values, is_retry=True, find_answer=find_answer)
+            response = _to_chat_response(final_state)
+            if response.status == "RUNNING":
+                http_response.status_code = status.HTTP_202_ACCEPTED
+                mark_agent_request_failed(owner_id=owner_id, request_id=request_id,
+                                          error_message="WAIT", execution_token=claim.execution_token)
+            else:
+                save_agent_response(owner_id=owner_id, request_id=request_id,
+                                    response=response.model_dump(mode="json"),
+                                    execution_token=claim.execution_token)
+            trace_event("interaction.finished", interrupt_id=interrupt_id, status=response.status)
+            return response
+        except Exception as exc:
+            trace_event("interaction.failed", interrupt_id=interrupt_id, error_type=type(exc).__name__)
+            try:
+                mark_agent_request_failed(owner_id=owner_id, request_id=request_id,
+                                          error_message=type(exc).__name__, execution_token=claim.execution_token)
+            except Exception:
+                logger.exception("Agent 交互失败状态保存失败")
+            raise HTTPException(status_code=409 if isinstance(exc, RecoveryConflict) else 500,
+                                detail=str(exc) if isinstance(exc, RecoveryConflict) else "恢复失败，请重试原交互或原请求") from exc
+
+
+async def _interaction_in_thread(owner_id, interrupt_id, answer, http_response):
+    def execute():
+        try:
+            with lock_agent_session(derive_thread_id(owner_id)):
+                return _handle_interaction(owner_id, interrupt_id, answer, http_response)
+        except SessionBusy as exc:
+            # 锁未取得时没有改动 checkpoint；浏览器应保留答案后重试。
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return await run_in_threadpool(execute)
+
+
+@router.post("/resume", response_model=ChatResponse)
+async def resume_chat(request: ResumeAgentRequest, http_response: Response, http_request: Request,
+                      current_user: dict = Depends(get_current_user)):
+    answer = request.model_dump(exclude={"interrupt_id"}, exclude_none=True)
+    return await _queue_interaction(current_user, request.interrupt_id, answer, http_response, http_request)
 
 
 @router.post("/cancel", response_model=ChatResponse)
-async def cancel_chat(
-    request: CancelAgentRequest,
-    http_response: Response,
-    current_user: dict = Depends(get_current_user),
-):
-    """取消当前等待中的中断，结束图而不继续执行后续 Tool。"""
-    owner_id = current_user["user_id"]
-    config = _graph_config(owner_id)
-    graph = _runtime_graph()
-    snapshot = graph.get_state(config)
-    if request.interrupt_id not in _pending_interrupt_payloads(snapshot):
-        raise HTTPException(status_code=409, detail="交互信息已失效，请重新发起操作")
+async def cancel_chat(request: CancelAgentRequest, http_response: Response, http_request: Request,
+                      current_user: dict = Depends(get_current_user)):
+    return await _queue_interaction(current_user, request.interrupt_id, {"cancelled": True}, http_response, http_request)
 
-    request_id = (snapshot.values or {}).get("request_id")
-    if not isinstance(request_id, str):
-        raise HTTPException(status_code=500, detail="检查点缺少 request_id")
-    claim = claim_agent_resume(owner_id=owner_id, request_id=request_id)
-    if claim.action == AgentRequestAction.RETURN_RESPONSE:
-        return _saved_chat_response(claim.response)
-    if claim.action != AgentRequestAction.EXECUTE or not claim.execution_token:
-        raise HTTPException(status_code=409, detail="该请求正在恢复，请稍后查询状态")
+
+async def _queue_interaction(current_user, interrupt_id, answer, http_response, http_request):
+    """校验中断、保存答案、安排图恢复；等待用户期间执行线程已释放会话锁。"""
+    from backend.db.agent_stream_store import accept_chat, accept_resume, load_task, TaskConflict
+    from backend.routers.stream import task_response
+    owner_id = current_user["user_id"]
+
+    def accept():
+        snapshot = _runtime_graph().get_state(_graph_config(owner_id))
+        pending = _pending_interrupt_payloads(snapshot).get(interrupt_id)
+        receipt = get_interaction(owner_id, interrupt_id)
+        if not pending and not receipt:
+            raise HTTPException(409, "交互信息已失效，请重新发起操作")
+        if pending:
+            _validate_interaction_answer(pending, answer)
+        request_id = receipt["request_id"] if receipt else snapshot.values["request_id"]
+        if not load_task(owner_id, request_id):
+            # 兼容升级前等待中的请求：原 user_input 来自检查点，不取浏览器的新输入。
+            # 先提交答案回执，再创建可执行批次。否则进程内恢复循环可能在两次
+            # 提交之间启动图，误把“尚未读到答案”再次保存成 waiting。
+            try:
+                save_interaction(owner_id, request_id, interrupt_id, answer)
+            except ValueError as exc:
+                raise TaskConflict(str(exc)) from exc
+            context = {key: current_user[key] for key in ("user_id", "self_person_id", "phone") if key in current_user}
+            accept_chat(owner_id, request_id, derive_thread_id(owner_id), snapshot.values["user_input"], context)
+        return accept_resume(owner_id, request_id, interrupt_id, answer)
 
     try:
-        # LangGraph 将此值返回到当前 interrupt()；节点看到 cancelled=True
-        # 后直接走 END，旧 interrupt_id 随之失效，下一问可重新从入口开始。
-        final_state = graph.invoke(
-            Command(resume={request.interrupt_id: {"cancelled": True}}),
-            config=config,
-        )
-        chat_response = _to_chat_response(final_state)
-        if chat_response.status != "CANCELLED":
-            raise RuntimeError("取消后图未进入终止状态")
-        # agent_request.completed 表示本次 HTTP/图运行已终结；业务结果由
-        # ChatResponse.status=CANCELLED 表达，无须改动现有数据库 CHECK 约束。
-        save_agent_response(
-            owner_id=owner_id,
-            request_id=request_id,
-            response=chat_response.model_dump(mode="json"),
-            execution_token=claim.execution_token,
-        )
-        return chat_response
-    except Exception as exc:
-        logger.exception("Agent 取消失败: request_id=%s", request_id)
-        try:
-            mark_agent_request_failed(
-                owner_id=owner_id,
-                request_id=request_id,
-                error_message=str(exc),
-                execution_token=claim.execution_token,
-            )
-        except Exception:
-            logger.exception("Agent 取消 failed 状态保存失败")
-        raise HTTPException(status_code=500, detail="取消任务失败，请查询当前状态") from exc
+        task = await run_in_threadpool(accept)
+    except TaskConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if task["status"] in {"queued", "running"}:
+        http_response.status_code = 202
+    from backend.agent.stream_runtime import schedule_accepted
+    schedule_accepted(http_request, task)
+    return task_response(task)

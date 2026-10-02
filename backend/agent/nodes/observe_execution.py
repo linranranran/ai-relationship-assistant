@@ -89,7 +89,7 @@ def observe_execution(state: AgentState) -> Command:
     2. 返回 ``AMBIGUOUS``，观察是否进入结构化澄清中断；
     3. 返回 ``IN_PROGRESS`` 或 ``TRANSIENT``，观察是否结束并提示稍后重试。
     """
-    logger.info(f"5、进入到观察节点，state={state}")
+
     observation = _observe(state)
     update = _observation_update(state, observation)
     return _route_decision(state, observation, update)

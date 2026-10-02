@@ -7,6 +7,8 @@ import {
   getRequestStatus,
   resumeInteraction,
   sendMessage,
+  subscribeRequest,
+  stopRequest,
 } from '../api/chat'
 import { MAX_CHAT_MESSAGE_LENGTH, validateChatMessage } from '../validation/requests'
 
@@ -62,6 +64,12 @@ export default function Chat() {
   const [messages, setMessages] = useState(() => loadPendingMessages(pendingStorageKey))
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [streaming, setStreaming] = useState(false)
+  const [connection, setConnection] = useState('connected')
+  const [progress, setProgress] = useState([])
+  const [draft, setDraft] = useState(null)
+  const streamRef = useRef(null)
+  const busy = sending || streaming
   const bottomRef = useRef(null)
   const pendingInteraction = readPendingRequest(pendingStorageKey)?.interaction
 
@@ -98,6 +106,18 @@ export default function Chat() {
       return
     }
 
+    if (data.status === 'FAILED') {
+      // failed 是可恢复状态；查询失败结果后仍保留原 request_id 和原提问。
+      // 后端会从检查点继续，并读取已持久化的人工答案，不能创建一个新任务。
+      const retry = { text: pending.text, requestId: pending.requestId }
+      localStorage.setItem(pendingStorageKey, JSON.stringify(retry))
+      setMessages((prev) => [
+        ...clearPendingPrompts(prev),
+        { role: 'assistant', content: data.response, retry },
+      ])
+      return
+    }
+
     localStorage.removeItem(pendingStorageKey)
     setMessages((prev) => [
       ...clearPendingPrompts(prev),
@@ -119,8 +139,111 @@ export default function Chat() {
     ])
   }
 
+  const startStream = (pending) => {
+    streamRef.current?.abort()
+    const controller = new AbortController()
+    streamRef.current = controller
+    setStreaming(true)
+    setConnection('connected')
+    setProgress([])
+    setDraft(null)
+    // 游标属于 request_id；恢复/失败重试换 run_id，但序号继续递增。
+    // 新建页面订阅时草稿已清空，从事件头重建当前批次的草稿。连接内部的断线
+    // 重连仍按 Last-Event-ID 补读；不能拿旧游标搭配一个空草稿继续拼接。
+    const subscription = { ...pending, cursor: 0 }
+    subscribeRequest(subscription, controller.signal, (event) => {
+      const stored = readPendingRequest(pendingStorageKey)
+      if (stored?.requestId === pending.requestId) {
+        localStorage.setItem(pendingStorageKey, JSON.stringify({ ...stored, cursor: event.seq }))
+      }
+      if (event.type === 'request.snapshot' && event.run_id !== subscription.runId) {
+        // 权威快照发现另一个页面已经启动恢复批次：切换批次并丢弃旧草稿。
+        subscription.runId = event.run_id
+        setDraft(null)
+        setProgress([])
+        if (stored?.requestId === pending.requestId) {
+          localStorage.setItem(pendingStorageKey, JSON.stringify({ ...stored,
+            runId: event.run_id, cursor: event.seq, interaction: undefined }))
+        }
+      }
+      // 历史批次的终止事件不能结束刚刚提交的恢复任务。
+      if (event.run_id !== subscription.runId) return false
+      if (event.type === 'stage.started' || event.type.startsWith('tool.')) {
+        setProgress((previous) => [...previous.slice(-19), {
+          seq: event.seq, message: event.message, type: event.type,
+        }])
+      }
+      if (event.type === 'response.started') {
+        setDraft({ id: event.response_id, text: '' })
+      } else if (event.type === 'response.delta') {
+        // 重新生成时替换草稿；旧 response_id 的延迟事件不能污染新答案。
+        setDraft((previous) => previous?.id === event.response_id
+          ? { ...previous, text: previous.text + event.delta }
+          : previous)
+      }
+      const response = event.payload?.response
+      const terminal = ['request.completed', 'request.failed', 'request.cancelled', 'interaction.required'].includes(event.type)
+        || (event.type === 'request.snapshot' && !['QUEUED', 'RUNNING'].includes(response?.status))
+      if (terminal && response) {
+        setDraft(null)
+        setStreaming(false)
+        appendAgentResponse(response, { ...pending, cursor: event.seq })
+        controller.abort()
+        return true
+      }
+      return false
+    }, setConnection).catch(() => {
+      if (controller.signal.aborted) return
+      setStreaming(false)
+      setDraft(null)
+      // 网络故障没有证明业务失败，保留原请求，供查询/重新订阅。
+      showStatusCheck(readPendingRequest(pendingStorageKey) || pending,
+        '暂时收不到进度，后台任务仍可继续。请查询当前状态。')
+    })
+  }
+
+  const receiveResponse = (data, pending) => {
+    if (['QUEUED', 'RUNNING'].includes(data.status) && data.run_id) {
+      const active = { ...pending, runId: data.run_id, interaction: undefined, statusCheck: true }
+      localStorage.setItem(pendingStorageKey, JSON.stringify(active))
+      setMessages((previous) => clearPendingPrompts(previous))
+      startStream(active)
+    } else {
+      appendAgentResponse(data, pending)
+    }
+  }
+
+  useEffect(() => {
+    // 刷新页面先查询权威状态，再恢复 SSE；不自动重发上一次提问或人工答案。
+    const pending = readPendingRequest(pendingStorageKey)
+    let disposed = false
+    if (pending && !pending.interaction) {
+      getRequestStatus(pending.requestId).then(({ data }) => {
+        if (!disposed) receiveResponse(data, { ...pending, cursor: 0 })
+      }).catch(() => { /* 保留页面上的查询/重试按钮。 */ })
+    }
+    return () => {
+      disposed = true
+      streamRef.current?.abort() // 只关闭订阅，绝不取消后端任务。
+    }
+    // 按登录用户只恢复一次。receiveResponse 每次渲染都会重新创建，加入依赖
+    // 会使每个 token 都关闭/重建连接；异步回调只调用稳定的状态 setter。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingStorageKey])
+
+  const handleStop = async () => {
+    const pending = readPendingRequest(pendingStorageKey)
+    if (!pending) return
+    try {
+      await stopRequest(pending.requestId)
+      MessagePlugin.info('已请求停止后续步骤，正在等待当前操作返回。')
+    } catch (error) {
+      MessagePlugin.error(error.response?.data?.detail || '暂时无法停止，请查询状态')
+    }
+  }
+
   const submitRequest = async (text, requestId, appendUserMessage) => {
-    if (sending) return
+    if (busy) return
     const pending = { text, requestId }
     localStorage.setItem(pendingStorageKey, JSON.stringify(pending))
     setMessages((prev) => {
@@ -133,9 +256,17 @@ export default function Chat() {
 
     try {
       const res = await sendMessage(text, requestId)
-      appendAgentResponse(res.data, pending)
+      receiveResponse(res.data, pending)
     } catch (err) {
       const detail = err.response?.data?.detail || '请求超时或网络异常'
+      if (appendUserMessage && [400, 403, 409, 422].includes(err.response?.status)) {
+        // 明确拒绝受理时没有后台任务，不把一个不存在的 request_id 永久挂起。
+        localStorage.removeItem(pendingStorageKey)
+        setInput(text)
+        setMessages((previous) => [...previous, { role: 'assistant', content: detail }])
+        MessagePlugin.error(detail)
+        return
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -151,9 +282,9 @@ export default function Chat() {
   }
 
   const handleSend = async () => {
-    if (sending) return
-    if (readPendingRequest(pendingStorageKey)?.interaction) {
-      MessagePlugin.warning('当前任务正在等待交互，请先补充、选择或取消当前任务。')
+    if (busy) return
+    if (readPendingRequest(pendingStorageKey)) {
+      MessagePlugin.warning('当前任务尚未结束，请先查询、重试或处理当前交互。')
       return
     }
     const validation = validateChatMessage(input)
@@ -168,7 +299,7 @@ export default function Chat() {
   }
 
   const handleSubmitClarification = async (interaction) => {
-    if (sending) return
+    if (busy) return
     if (readPendingRequest(pendingStorageKey)?.interaction?.interrupt_id
       !== interaction.interrupt_id) {
       MessagePlugin.warning('补充信息已失效，请查询最新状态。')
@@ -189,11 +320,11 @@ export default function Chat() {
   }
 
   const handleCheckStatus = async (pending) => {
-    if (sending) return
+    if (busy) return
     setSending(true)
     try {
       const res = await getRequestStatus(pending.requestId)
-      appendAgentResponse(res.data, pending)
+      receiveResponse(res.data, pending)
     } catch (err) {
       const detail = err.response?.data?.detail || '暂时无法查询任务状态'
       showStatusCheck(pending, `${detail}。后端恢复后可再次查询。`)
@@ -204,7 +335,7 @@ export default function Chat() {
   }
 
   const submitResume = async (interaction, payload, visibleAnswer) => {
-    if (sending) return
+    if (busy) return
     const pending = readPendingRequest(pendingStorageKey)
     if (pending?.interaction?.interrupt_id !== interaction.interrupt_id) {
       setMessages((prev) => [
@@ -225,7 +356,7 @@ export default function Chat() {
 
     try {
       const res = await resumeInteraction(interaction.interrupt_id, payload)
-      appendAgentResponse(res.data, pending)
+      receiveResponse(res.data, pending)
     } catch (err) {
       const detail = err.response?.data?.detail || '未收到恢复请求的响应'
       const expired = err.response?.status === 409
@@ -236,7 +367,7 @@ export default function Chat() {
         const latestInteraction = latest.confirmation || latest.clarification
         // 409 后若数据库仍保存同一个旧中断，不能再次把失效按钮展示出来。
         if (!expired || latestInteraction?.interrupt_id !== interaction.interrupt_id) {
-          appendAgentResponse(latest, pending)
+          receiveResponse(latest, pending)
           return
         }
       } catch {
@@ -262,7 +393,7 @@ export default function Chat() {
   }
 
   const submitCancel = async (interaction) => {
-    if (sending) return
+    if (busy) return
     const pending = readPendingRequest(pendingStorageKey)
     if (pending?.interaction?.interrupt_id !== interaction.interrupt_id) {
       MessagePlugin.warning('这条交互已不是当前任务，请查询最新状态。')
@@ -271,23 +402,25 @@ export default function Chat() {
     setSending(true)
     try {
       const res = await cancelInteraction(interaction.interrupt_id)
-      appendAgentResponse(res.data, pending)
+      receiveResponse(res.data, pending)
     } catch (err) {
       const detail = err.response?.data?.detail || '未收到取消任务的响应'
+      const expired = err.response?.status === 409
+        && detail === '交互信息已失效，请重新发起操作'
       try {
         const statusRes = await getRequestStatus(pending.requestId)
         const latest = statusRes.data
         const latestInteraction = latest.confirmation || latest.clarification
         // 检查点已失效而数据库仍留着旧交互时，解除本地卡住的输入框。
-        if (err.response?.status !== 409
+        if (!expired
           || latestInteraction?.interrupt_id !== interaction.interrupt_id) {
-          appendAgentResponse(latest, pending)
+          receiveResponse(latest, pending)
           return
         }
       } catch {
         // 状态查询不可用时，保留 request_id，供稍后再查。
       }
-      if (err.response?.status === 409) {
+      if (expired) {
         localStorage.removeItem(pendingStorageKey)
         setMessages((prev) => [
           ...clearPendingPrompts(prev),
@@ -303,6 +436,7 @@ export default function Chat() {
   }
 
   const handleLogout = () => {
+    streamRef.current?.abort()
     localStorage.removeItem('token')
     localStorage.removeItem('user')
     navigate('/login')
@@ -353,7 +487,7 @@ export default function Chat() {
                   <Button
                     size="small"
                     variant="outline"
-                    disabled={sending}
+                    disabled={busy}
                     onClick={() => handleRetry(msg.retry)}
                   >
                     使用原请求重试
@@ -365,7 +499,7 @@ export default function Chat() {
                   <Button
                     size="small"
                     variant="outline"
-                    disabled={sending}
+                    disabled={busy}
                     onClick={() => handleCheckStatus(msg.statusCheck)}
                   >
                     查询当前状态
@@ -377,7 +511,7 @@ export default function Chat() {
                   <Button
                     size="small"
                     theme="primary"
-                    disabled={sending}
+                    disabled={busy}
                     onClick={() => submitResume(msg.interaction, { confirmed: true }, '确认执行')}
                   >
                     确认
@@ -391,7 +525,7 @@ export default function Chat() {
                       key={candidate.id}
                       size="small"
                       variant="outline"
-                      disabled={sending}
+                      disabled={busy}
                       onClick={() => submitResume(
                         msg.interaction,
                         { candidate_id: candidate.id },
@@ -411,7 +545,7 @@ export default function Chat() {
                   <Button
                     size="small"
                     theme="primary"
-                    disabled={sending}
+                    disabled={busy}
                     onClick={() => handleSubmitClarification(msg.interaction)}
                   >
                     提交补充信息
@@ -423,7 +557,7 @@ export default function Chat() {
                   <Button
                     size="small"
                     variant="outline"
-                    disabled={sending}
+                    disabled={busy}
                     onClick={() => submitCancel(msg.interaction)}
                   >
                     取消当前任务
@@ -436,14 +570,23 @@ export default function Chat() {
             )}
           </div>
         ))}
-        {sending && (
+        {(busy || progress.length > 0) && (
           <div style={{ display: 'flex', marginBottom: 16 }}>
             <span style={{ marginRight: 8, fontSize: 20 }}>🤖</span>
             <div style={{ padding: '10px 16px', borderRadius: 12, background: '#fff' }}>
-              <Loading size="small" text="思考中..." />
+              {busy && <Loading size="small" text={connection === 'reconnecting'
+                ? '进度连接恢复中，后台继续执行…'
+                : progress.at(-1)?.message || '任务已提交，等待执行…'} />}
+              {progress.length > 0 && <details style={{ marginTop: 8, fontSize: 12, color: '#777' }}>
+                <summary>查看执行进度</summary>
+                {progress.map((item) => <div key={item.seq}>{item.message}</div>)}
+              </details>}
+              {streaming && <Button size="small" variant="text" onClick={handleStop}>停止后续步骤</Button>}
             </div>
           </div>
         )}
+        {draft?.text && <div style={{ padding: 16, marginBottom: 16, background: '#fff',
+          borderRadius: 12, whiteSpace: 'pre-wrap' }}>{draft.text}</div>}
         <div ref={bottomRef} />
       </main>
 
@@ -458,14 +601,14 @@ export default function Chat() {
           onEnter={handleSend}
           placeholder="输入消息，按 Enter 发送..."
           maxLength={MAX_CHAT_MESSAGE_LENGTH}
-          disabled={sending}
+          disabled={busy}
           style={{ flex: 1 }}
         />
         <Button
           theme="primary"
           onClick={handleSend}
-          loading={sending}
-          disabled={sending || Boolean(pendingInteraction)}
+          loading={busy}
+          disabled={busy || Boolean(pendingInteraction)}
         >
           发送新问题
         </Button>

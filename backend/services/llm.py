@@ -3,6 +3,8 @@
 # ============================================================
 
 import logging
+from backend.agent.tracing import trace_event
+from time import perf_counter
 
 from httpx import Timeout
 
@@ -37,13 +39,7 @@ def get_llm_client() -> OpenAI:
     )
 
 
-def chat(
-    client: OpenAI,
-    system_prompt: str,
-    messages: list[dict],
-    temperature: float = 0.3,
-    response_format: dict | None = None,
-) -> str:
+def _request_kwargs(system_prompt, messages, temperature, response_format=None):
     """发送已经过 Context Builder 裁剪的消息。
 
     本层只负责模型协议，不负责加载记忆或决定哪些历史可以发送。调用方必须先经过
@@ -81,17 +77,56 @@ def chat(
     if response_format:
         kwargs["response_format"] = response_format
 
+    return kwargs, final_estimate
+
+
+def chat(client: OpenAI, system_prompt: str, messages: list[dict],
+         temperature: float = 0.3, response_format: dict | None = None) -> str:
+    """结构化规划等内部节点继续非流式调用，不将内部 JSON 暴露给浏览器。"""
+    kwargs, final_estimate = _request_kwargs(system_prompt, messages, temperature, response_format)
+    started = perf_counter()
     response = client.chat.completions.create(**kwargs)
     usage = getattr(response, "usage", None)
     if usage is not None:
         # 只记录数字，不记录包含客户原文的 Prompt。
-        logger.info(
-            "LLM usage: model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s "
-            "estimated_prompt_tokens=%s",
-            LLM_MODEL,
-            getattr(usage, "prompt_tokens", None),
-            getattr(usage, "completion_tokens", None),
-            getattr(usage, "total_tokens", None),
-            final_estimate,
-        )
+        trace_event("model.usage", model=LLM_MODEL,
+                    prompt_tokens=getattr(usage, "prompt_tokens", None),
+                    completion_tokens=getattr(usage, "completion_tokens", None),
+                    total_tokens=getattr(usage, "total_tokens", None),
+                    estimated_prompt_tokens=final_estimate,
+                    latency_ms=int((perf_counter() - started) * 1000))
     return response.choices[0].message.content
+
+
+def stream_chat(client: OpenAI, system_prompt: str, messages: list[dict], temperature=0.3):
+    """供应商原生流，不把完整答案切成字符来模拟流式。
+
+    与普通调用共用最终 Token 检查。只消费 delta.content，reasoning_content 和
+    tool_calls 都不会作为用户回复输出。调用方负责聚合增量、保存完整答案。
+    """
+    from backend.agent.streaming import check_execution
+    kwargs, estimate = _request_kwargs(system_prompt, messages, temperature)
+    started = perf_counter()
+    first_token = True
+    finish_reason = None
+    with client.chat.completions.create(**kwargs, stream=True) as stream:
+        for chunk in stream:
+            check_execution()
+            if not chunk.choices:
+                continue
+            if chunk.choices[0].finish_reason is not None:
+                finish_reason = chunk.choices[0].finish_reason
+            content = chunk.choices[0].delta.content
+            if content:
+                if first_token:
+                    trace_event("model.first_token", model=LLM_MODEL,
+                                latency_ms=int((perf_counter() - started) * 1000))
+                    first_token = False
+                yield content
+    # SDK 在异常 EOF 时可能自然结束迭代。未收到 stop 的部分文本只是草稿，
+    # 不能写为 COMPLETED / conversation_message，否则重试会永远复用截断答案。
+    if finish_reason != "stop":
+        trace_event("model.stream.incomplete", model=LLM_MODEL, finish_reason=finish_reason)
+        raise RuntimeError("模型回复未完整生成，请使用原请求重试")
+    trace_event("model.stream.finished", model=LLM_MODEL, estimated_prompt_tokens=estimate,
+                latency_ms=int((perf_counter() - started) * 1000))

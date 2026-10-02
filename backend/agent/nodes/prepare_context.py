@@ -18,7 +18,6 @@ def prepare_context(state: AgentState) -> dict:
     的 conversation 记录，而不是任意浏览器参数。
     """
 
-    logger.info(f"1、进入到装载上下文节点，prepare_context: {state}")
     runtime = get_memory_runtime()
     bundle = build_context_bundle(
         owner_id=state["user_id"],

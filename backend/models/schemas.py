@@ -114,10 +114,12 @@ class ClarificationPrompt(BaseModel):
 
 class ChatResponse(BaseModel):
     request_id: str = Field(description="本次请求的幂等键，重试和查询必须复用")
+    run_id: Optional[str] = Field(default=None, description="本次执行/恢复批次；与 request_id 含义不同")
     response: str = Field(description="Agent 的回复")
     intent: Optional[str] = Field(default=None, description="识别的意图")
     tool_calls: Optional[list[str]] = Field(default=None, description="执行的 Tool 列表")
     status: Literal[
+        "QUEUED",
         "RUNNING",
         "COMPLETED",
         "CONFIRMATION_REQUIRED",

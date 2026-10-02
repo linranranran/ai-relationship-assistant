@@ -44,6 +44,8 @@ class AgentRequestClaim:
     action: AgentRequestAction
     execution_token: str | None = None
     response: dict | None = None
+    # 首次与接管失败/超时请求必须区分：后者只能继续原检查点。
+    is_retry: bool = False
 
 
 def load_agent_request(owner_id: str, request_id: str) -> dict | None:
@@ -110,6 +112,7 @@ def claim_agent_request(
             return AgentRequestClaim(
                 AgentRequestAction.EXECUTE,
                 execution_token=execution_token,
+                is_retry=True,
             )
         return AgentRequestClaim(AgentRequestAction.IN_PROGRESS)
 
@@ -123,22 +126,34 @@ def claim_agent_request(
             return AgentRequestClaim(
                 AgentRequestAction.EXECUTE,
                 execution_token=execution_token,
+                is_retry=True,
             )
         return AgentRequestClaim(AgentRequestAction.IN_PROGRESS)
 
     raise RuntimeError(f"未知 Agent 请求状态：{status}")
 
 
-def claim_agent_resume(*, owner_id: str, request_id: str) -> AgentRequestClaim:
+def claim_agent_resume(*, owner_id: str, request_id: str,
+                       stale_after_seconds: int = AGENT_REQUEST_STALE_SECONDS) -> AgentRequestClaim:
     """把等待确认的请求原子地恢复为 running。"""
     execution_token = str(uuid4())
     if try_resume_agent_request(owner_id, request_id, execution_token):
         return AgentRequestClaim(
             AgentRequestAction.EXECUTE,
             execution_token=execution_token,
+            is_retry=True,
         )
 
     record = get_agent_request(owner_id, request_id)
+    if record and record.get("status") == AgentRequestStatus.FAILED:
+        if try_restart_failed_agent_request(owner_id, request_id, execution_token):
+            return AgentRequestClaim(AgentRequestAction.EXECUTE,
+                                     execution_token=execution_token, is_retry=True)
+    if record and record.get("status") == AgentRequestStatus.RUNNING:
+        if try_reclaim_stale_agent_request(owner_id, request_id,
+                                          stale_after_seconds, execution_token):
+            return AgentRequestClaim(AgentRequestAction.EXECUTE,
+                                     execution_token=execution_token, is_retry=True)
     if record and record.get("status") == AgentRequestStatus.COMPLETED:
         response = record.get("response")
         if isinstance(response, dict):

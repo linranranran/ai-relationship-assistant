@@ -4,8 +4,10 @@
 # ============================================================
 
 from threading import Lock
+from backend.agent.tracing import traced_node
 
 from langgraph.graph import StateGraph
+from langgraph.types import Command
 from backend.agent.checkpointing import create_checkpointer_handle
 from backend.agent.state import AgentState
 from backend.agent.nodes.classify_intent import classify_intent
@@ -25,6 +27,13 @@ from backend.config import (
     AGENT_CHECKPOINT_POOL_MIN_SIZE,
     AGENT_CHECKPOINT_POOL_TIMEOUT_SECONDS,
 )
+
+
+def dispatch_request(state: AgentState) -> Command:
+    """新问题进入理解链路；WAIT 重试进入原计划，不能重新调用规划模型。"""
+    if state.get("resume_execution") is True:
+        return Command(update={"resume_execution": False}, goto="execute_tools")
+    return Command(goto="resolve_person_reference")
 
 
 def build_agent_graph(checkpointer=None):
@@ -51,20 +60,21 @@ def build_agent_graph(checkpointer=None):
     graph = StateGraph(AgentState)
 
     # ── 注册节点 ──
-    graph.add_node("resolve_person_reference", resolve_person_reference)
-    graph.add_node("prepare_context", prepare_context)
-    graph.add_node("classify_intent", classify_intent)
-    graph.add_node("extract_info", extract_info)
-    graph.add_node("plan_tasks", plan_tasks)
-    graph.add_node("execute_tools", execute_tools)
-    graph.add_node("observe_execution", observe_execution)
-    graph.add_node("generate_response", generate_response)
-    graph.add_node("ask_clarification", ask_clarification)
-    graph.add_node("request_confirmation", request_confirmation)
-    graph.add_node("finalize_memory", finalize_memory)
+    graph.add_node("dispatch_request", traced_node("dispatch_request", dispatch_request))
+    graph.add_node("resolve_person_reference", traced_node("resolve_person_reference", resolve_person_reference))
+    graph.add_node("prepare_context", traced_node("prepare_context", prepare_context))
+    graph.add_node("classify_intent", traced_node("classify_intent", classify_intent))
+    graph.add_node("extract_info", traced_node("extract_info", extract_info))
+    graph.add_node("plan_tasks", traced_node("plan_tasks", plan_tasks))
+    graph.add_node("execute_tools", traced_node("execute_tools", execute_tools))
+    graph.add_node("observe_execution", traced_node("observe_execution", observe_execution))
+    graph.add_node("generate_response", traced_node("generate_response", generate_response))
+    graph.add_node("ask_clarification", traced_node("ask_clarification", ask_clarification))
+    graph.add_node("request_confirmation", traced_node("request_confirmation", request_confirmation))
+    graph.add_node("finalize_memory", traced_node("finalize_memory", finalize_memory))
 
     # ── 入口 ──
-    graph.set_entry_point("resolve_person_reference")
+    graph.set_entry_point("dispatch_request")
     graph.add_edge("prepare_context", "classify_intent")
     graph.add_edge("generate_response", "finalize_memory")
 

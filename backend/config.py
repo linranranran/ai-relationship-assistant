@@ -24,6 +24,15 @@ def _get_float(key: str, default: float) -> float:
     return float(os.getenv(key, default))
 
 LOG_LEVEL = _get("LOG_LEVEL", "INFO")
+
+# --- LangGraph 进程内流式执行与 SSE ---
+# Web 进程直接运行图；限制并行数，不阻塞 HTTP 事件循环。
+AGENT_STREAM_MAX_RUNS = _get_int("AGENT_STREAM_MAX_RUNS", 4)
+AGENT_RUN_LEASE_SECONDS = _get_int("AGENT_RUN_LEASE_SECONDS", 120)
+AGENT_QUEUE_LIMIT = _get_int("AGENT_QUEUE_LIMIT", 100)
+AGENT_EVENT_RETENTION = _get_int("AGENT_EVENT_RETENTION", 5000)
+AGENT_SSE_POLL_SECONDS = _get_float("AGENT_SSE_POLL_SECONDS", 0.5)
+AGENT_SSE_MAX_CONNECTIONS = _get_int("AGENT_SSE_MAX_CONNECTIONS", 100)
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -67,7 +76,8 @@ POSTGRES_POOL_TIMEOUT_SECONDS = _get_int("POSTGRES_POOL_TIMEOUT_SECONDS", 10)
 
 # --- LangGraph Checkpointer ---
 # memory 仅用于本地调试；部署环境使用 postgres 才能跨进程恢复中断状态。
-AGENT_CHECKPOINTER_BACKEND = _get("AGENT_CHECKPOINTER_BACKEND", "memory")
+# 使用 PG 检查点支持 Web 重启后的恢复；memory 仅供单进程学习脚本。
+AGENT_CHECKPOINTER_BACKEND = _get("AGENT_CHECKPOINTER_BACKEND", "postgres")
 AGENT_CHECKPOINT_POOL_MIN_SIZE = _get_int("AGENT_CHECKPOINT_POOL_MIN_SIZE", 1)
 AGENT_CHECKPOINT_POOL_MAX_SIZE = _get_int("AGENT_CHECKPOINT_POOL_MAX_SIZE", 5)
 AGENT_CHECKPOINT_POOL_TIMEOUT_SECONDS = _get_int(

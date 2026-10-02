@@ -10,6 +10,9 @@ from neo4j.time import Date as Neo4jDate
 from neo4j.time import DateTime as Neo4jDateTime
 from neo4j.time import Duration as Neo4jDuration
 from neo4j.time import Time as Neo4jTime
+from neo4j import Record
+from backend.agent.tracing import trace_event
+from backend.agent.streaming import check_execution, emit_progress, ExecutionCancelled, TOOL_LABELS
 
 from backend.agent.confirmation import HIGH_RISK_TOOLS, build_confirmation_request
 from backend.agent.execution_enums import ExecutionClaimAction, ToolStepStatus
@@ -27,9 +30,11 @@ from backend.tools.registry import TOOL_ARGUMENT_MODELS, execute_tool
 
 logger = logging.getLogger(__name__)
 
-# 第一阶段只为新增人物接入业务数据库幂等。add_relation 完成相同的唯一键或
-# MERGE 约束后，再把它加入这里。仅有 PostgreSQL 执行记录还不能阻止业务库重复写。
-BUSINESS_IDEMPOTENT_TOOLS = frozenset({"add_person"})
+# 每个写操作都在业务库中原子保存回执；PostgreSQL 只负责租约与执行审计。
+BUSINESS_IDEMPOTENT_TOOLS = frozenset({
+    "add_person", "update_person", "delete_person",
+    "add_relation", "update_relation", "delete_relation",
+})
 SELF_PERSON_MARKERS = frozenset({"@self", "self_person_id"})
 
 
@@ -49,6 +54,9 @@ def _serializable_tool_value(value):
         return value.isoformat()
     if isinstance(value, timedelta):
         return str(value)
+    if isinstance(value, Record):
+        # Record 也是 tuple，必须先转换，否则 relation_id 等字段名会丢失。
+        return _serializable_tool_value(value.data())
     if isinstance(value, dict):
         return {key: _serializable_tool_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -69,6 +77,36 @@ def _successful_results_by_step(records: list[dict]) -> dict[str, dict]:
         and isinstance(record.get("step_id"), str)
         and isinstance(record.get("result"), dict)
     }
+
+
+def _mutation_target(tool: str, args: dict, result: dict):
+    """去重只适用于仍未被后续写入改变的目标，不能把更新 A→B→A 当作重复。"""
+    data = result.get("data", {})
+    if not isinstance(data, dict):
+        data = {}
+    if tool == "add_person":
+        return ("person", data.get("id"))
+    if tool in {"update_person", "delete_person"}:
+        return ("person", args.get("person_id"))
+    if tool == "add_relation":
+        return ("relation", data.get("relation_id"))
+    return ("relation", args.get("relation_id"))
+
+
+def _remember_mutation(records: list[dict], call: dict, args: dict, result: dict, version: int):
+    target = _mutation_target(call["tool"], args, result)
+    for previous in records:
+        same_target = _mutation_target(previous["tool"], previous["args"], previous["result"]) == target
+        # 创建后的属性修改没有撤销“对象已创建”这一事实，ID 仍可继续引用。
+        # 只有删除才让创建结果失效；更新结果则会被任何后续同目标写入失效。
+        if previous["tool"] in {"add_person", "add_relation"} and call["tool"].startswith("update_"):
+            same_target = False
+        # 删除人物会同时删除边，旧关系快照不再代表当前业务效果。
+        deleted_endpoint = call["tool"] == "delete_person" and "relation" in previous["tool"]
+        if same_target or deleted_endpoint:
+            previous["reusable"] = False
+    records.append({"tool": call["tool"], "call_id": call["call_id"], "args": args,
+                    "result": result, "plan_version": version, "reusable": True})
 
 
 def _missing_person_probe_steps(
@@ -223,29 +261,47 @@ def _claim(state: AgentState, call: dict, resolved_args: dict) -> ExecutionClaim
     )
 
 
-def _invoke_tool_with_retry(tool_name: str, runtime_args: dict) -> tuple[dict, int]:
+def _invoke_tool_with_retry(tool_name: str, runtime_args: dict, *,
+                            call_id: str | None = None, step_id: str | None = None) -> tuple[dict, int]:
     """执行 Tool，并返回结果和耗时。
 
-    第一版沿用现有策略，最多执行两次；明显的参数缺失和数据冲突不重试。
-    等全部 Tool 接入结构化 ``retryable`` 后，应删除文案判断。
+    只重试明确标为 retryable 的 TRANSIENT，禁止靠中文错误文案猜测。
+    未知错误可能已经产生副作用，不能盲目自动重复。
     """
-    logger.info(f"4.1、开始执行{tool_name}工具，参数={runtime_args}")
+    trace_event("tool.start", tool=tool_name, call_id=call_id, step_id=step_id)
+    emit_progress("tool.started", tool=tool_name, call_id=call_id, step_id=step_id,
+                  message=TOOL_LABELS.get(tool_name, "执行工具"))
     started_at = perf_counter()
     result: dict = {"success": False, "message": "Tool 未返回结果"}
 
     for attempt in range(2):
+        if attempt:
+            try:
+                check_execution(force=True)
+            except ExecutionCancelled:
+                # 已开始的第一次调用允许完成并保存回执；取消阻止第二次重试。
+                # 返回失败事实而不是中途抛出，才能把本节点前面成功的步骤一起
+                # 写进 Checkpoint。下一工具/节点边界再结束整个任务。
+                result = {"success": False, "message": "用户已停止后续工具重试",
+                          "error_code": ToolErrorCode.INTERNAL.value, "retryable": False}
+                break
+            emit_progress("tool.retrying", tool=tool_name, call_id=call_id, step_id=step_id,
+                          attempt=attempt + 1, message="临时故障，正在重试工具")
         result = _serializable_tool_value(execute_tool(tool_name, **runtime_args))
         if result.get("success"):
             break
 
-        message = result.get("msg") or result.get("message") or "未知 Tool 错误"
-        if "缺少" in message or "已存在" in message:
+        if not (result.get("retryable") is True
+                and parse_tool_error_code(result) == ToolErrorCode.TRANSIENT):
             break
-        if attempt == 1:
-            logger.error("%s 重试仍失败: %s", tool_name, message)
 
     latency_ms = max(0, int((perf_counter() - started_at) * 1000))
-    logger.info(f"4.2、执行{tool_name}工具结束，耗时={latency_ms}")
+    trace_event("tool.finished", tool=tool_name, success=result.get("success"),
+                call_id=call_id, step_id=step_id,
+                error_code=result.get("error_code"), latency_ms=latency_ms)
+    emit_progress("tool.finished", tool=tool_name, call_id=call_id, step_id=step_id,
+                  success=bool(result.get("success")), latency_ms=latency_ms,
+                  message="工具调用已返回" if result.get("success") else "工具调用未成功")
     return result, latency_ms
 
 
@@ -259,21 +315,18 @@ def _save_success(
     errors: list[str],
     results_by_step: dict[str, dict],
 ) -> None:
-    """保存成功结果；即使审计落库失败，也如实记录 Tool 已产生的效果。"""
-    try:
-        mark_success(
-            call_id=call["call_id"],
-            owner_id=state["user_id"],
-            result=result,
-            latency_ms=latency_ms,
-            execution_token=claim.execution_token,
-        )
-    except Exception as exc:
-        # Tool 可能已经产生业务副作用，不能因审计表更新失败就谎称 Tool 失败。
-        # 写 Tool 还需要业务库幂等键来覆盖“副作用成功、审计落库失败”的窗口。
-        warning = f"步骤 {call['step_id']} 已成功，但幂等结果保存失败：{exc}"
-        logger.exception(warning)
-        errors.append(warning)
+    """审计落库失败时抛出系统错误，保留原计划以便重试。
+
+    此时写操作可能已提交，恢复时以原 call_id 读取 Neo4j 回执，不重新写入。
+    不能吞掉系统异常再交给模型重规划，也不能误报业务失败。
+    """
+    mark_success(
+        call_id=call["call_id"],
+        owner_id=state["user_id"],
+        result=result,
+        latency_ms=latency_ms,
+        execution_token=claim.execution_token,
+    )
 
     records.append(_record(call, ToolStepStatus.SUCCESS, result=result))
     results_by_step[call["step_id"]] = result
@@ -318,6 +371,7 @@ def _confirmation_command(
     records: list[dict],
     errors: list[str],
     index: int,
+    completed_mutations: list[dict],
 ) -> Command:
     """把已经解析出真实参数的高风险步骤交给确认节点暂停。"""
     pending = build_confirmation_request([tool_calls[index]], state["user_id"])
@@ -332,6 +386,7 @@ def _confirmation_command(
             "confirmation_type": "HIGH_RISK_TOOL",
             "pending_confirmation": pending,
             "user_confirmed": False,
+            "completed_mutations": completed_mutations,
         },
         goto="request_confirmation",
     )
@@ -356,11 +411,27 @@ def execute_tools(state: AgentState) -> Command:
     records = list(state.get("tool_results", []))
     errors = list(state.get("execution_errors", []))
     results_by_step = _successful_results_by_step(records)
+    completed_mutations = deepcopy(state.get("completed_mutations", []))
 
-    logger.info(f"4、进入到执行任务节点，state= {state}")
+    trace_event("execution.start", step_count=len(tool_calls))
     for index in range(state.get("next_tool_index", 0), len(tool_calls)):
+        try:
+            check_execution(force=True)
+        except ExecutionCancelled:
+            # 前几个步骤可能已提交业务数据，把这些事实写回检查点再结束。
+            # 取消不是数据库回滚，也不能清空已成功的 Tool 结果。
+            return Command(update={"tool_calls": tool_calls, "tool_results": records,
+                                   "execution_errors": errors, "completed_mutations": completed_mutations,
+                                   "next_tool_index": index, "execution_decision": "CANCELLED",
+                                   "response": "已停止后续步骤；已经完成的操作仍然保留。"}, goto="__end__")
         call = tool_calls[index]
         step_id = call["step_id"]
+
+        if step_id in results_by_step:
+            # WAIT 重入时保留已成功步骤，后续 $ref 继续引用原结果。
+            trace_event("tool.reused", step_id=step_id, call_id=call["call_id"], tool=call["tool"])
+            continue
+        trace_event("tool.claim", step_id=step_id, call_id=call["call_id"], tool=call["tool"])
 
         missing_dependencies = [
             dependency
@@ -429,9 +500,28 @@ def execute_tools(state: AgentState) -> Command:
         call["args"] = resolved_args
         tool_calls[index] = call
 
+        # 同一请求在澄清后可能换 plan_version/call_id。精确匹配已经完成的写
+        # 操作，复用结果；不是让模型自行记住“不要重复新增”。确认位是权限参数，
+        # 不参与业务操作内容比较。新的不同操作仍按正常流程确认和执行。
+        business_args = {key: value for key, value in resolved_args.items() if key != "confirmed"}
+        previous = next((item for item in completed_mutations
+                         if item.get("tool") == call["tool"]
+                         and item.get("args") == business_args
+                         and item.get("reusable", True)
+                         and item.get("plan_version", -1) != state.get("replan_count", 0)), None)
+        if call["tool"] in BUSINESS_IDEMPOTENT_TOOLS and previous is not None:
+            result = previous["result"]
+            records.append(_record(call, ToolStepStatus.RESOLVED, result=result))
+            results_by_step[step_id] = result
+            trace_event("tool.reused_business_result", call_id=call["call_id"],
+                        original_call_id=previous["call_id"], step_id=step_id)
+            emit_progress("tool.reused", tool=call["tool"], call_id=call["call_id"],
+                          step_id=step_id, message="复用此前已完成的操作结果")
+            continue
+
         if call["tool"] in HIGH_RISK_TOOLS and resolved_args.get("confirmed") is not True:
             try:
-                return _confirmation_command(state, tool_calls, records, errors, index)
+                return _confirmation_command(state, tool_calls, records, errors, index, completed_mutations)
             except Exception as exc:
                 _append_problem(
                     records,
@@ -442,21 +532,18 @@ def execute_tools(state: AgentState) -> Command:
                 )
                 continue
 
-        try:
-            claim = _claim(state, call, resolved_args)
-        except Exception as exc:
-            _append_problem(
-                records,
-                errors,
-                call,
-                message=f"步骤 {step_id} 无法获取幂等执行权：{exc}",
-                error_code=ToolErrorCode.INTERNAL,
-            )
-            continue
+        # 仓储/租约错误属于系统故障，应由 checkpoint 保存执行位置后交给
+        # 原请求重试，不能包装成业务信息不足后让模型或用户重新规划。
+        claim = _claim(state, call, resolved_args)
 
         if claim.action == ExecutionClaimAction.WAIT:
+            emit_progress("tool.reused", tool=call["tool"], call_id=call["call_id"],
+                          step_id=step_id, message="复用已保存的工具结果")
             records.append(_record(call, ToolStepStatus.SUCCESS, result=claim.result))
             results_by_step[step_id] = claim.result
+            if call["tool"] in BUSINESS_IDEMPOTENT_TOOLS:
+                _remember_mutation(completed_mutations, call, business_args, claim.result,
+                                   state.get("replan_count", 0))
             continue
 
         if claim.action == ExecutionClaimAction.IN_PROGRESS:
@@ -481,12 +568,16 @@ def execute_tools(state: AgentState) -> Command:
             continue
 
         result, latency_ms = _invoke_tool_with_retry(
-            call["tool"], _runtime_args(state, call, resolved_args)
+            call["tool"], _runtime_args(state, call, resolved_args),
+            call_id=call["call_id"], step_id=step_id,
         )
         if result.get("success"):
             _save_success(
                 state, call, claim, result, latency_ms, records, errors, results_by_step
             )
+            if call["tool"] in BUSINESS_IDEMPOTENT_TOOLS:
+                _remember_mutation(completed_mutations, call, business_args, result,
+                                   state.get("replan_count", 0))
             if missing_person_probes:
                 # 查无此人是新增的预期条件。新增成功后，从本轮观察结果中移除
                 # 这条“失败”，但 PostgreSQL tool_execution 仍保存原始查询审计。
@@ -514,6 +605,7 @@ def execute_tools(state: AgentState) -> Command:
             "next_tool_index": len(tool_calls),
             "needs_confirmation": False,
             "pending_confirmation": None,
+            "completed_mutations": completed_mutations,
         },
         goto="observe_execution",
     )

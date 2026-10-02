@@ -12,6 +12,7 @@ from backend.agent.prompts.system_prompts import PLAN_TASKS_PROMPT
 from backend.agent.state import AgentState
 from backend.exception.AgentException import ToolPlanValidationError
 from backend.services.llm import chat, get_llm_client
+from backend.agent.tracing import trace_event
 from backend.tools.definitions import ALL_TOOL_DEFINITIONS
 
 
@@ -105,7 +106,7 @@ def plan_tasks(state: AgentState) -> Command:
     的确认摘要并暂停，否则确认页面展示的可能仍是模型猜出的参数。
     """
     try:
-        logger.info(f"3、进入到计划任务节点，state= {state}")
+
         reference = state.get("resolved_reference")
         if (isinstance(reference, dict)
                 and reference.get("owner_id") == state["user_id"]
@@ -145,7 +146,8 @@ def plan_tasks(state: AgentState) -> Command:
             request_id=state["request_id"],
             plan_version=state.get("replan_count", 0),
         )
-        logger.info(f"3.1、LLM计划任务结果，tool_calls= {tool_calls}")
+        trace_event("plan.created", step_count=len(tool_calls),
+                    tools=[item["tool"] for item in tool_calls])
         if not tool_calls:
             reason = (
                 "重规划没有生成可执行步骤，需要用户补充信息"
@@ -162,4 +164,6 @@ def plan_tasks(state: AgentState) -> Command:
         return _needs_more_information("任务规划结果无法解析，请补充或重新描述需求")
     except Exception:
         logger.exception("任务规划发生未处理异常")
-        return _needs_more_information("任务规划暂时无法完成，请补充信息或稍后重试")
+        # 供应商超时/连接失败属于系统故障，让 LangGraph 保留原节点供请求重试。
+        # 不要求用户补充业务信息，也不伪装成模型已经生成了一个空计划。
+        raise

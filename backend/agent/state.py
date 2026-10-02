@@ -48,6 +48,8 @@ class AgentState(TypedDict):
     execution_errors: List[str]        # 执行中的错误
     retry_count: int                   # 重试次数
     next_tool_index: int               # 依赖执行器下一步要执行的 Tool 下标
+    resume_execution: bool             # WAIT 主动结束后重试原计划，入口跳过模型规划
+    completed_mutations: List[dict]    # 本请求已完成的写操作，澄清重规划也不能丢失
 
     # === 执行观察与重规划 ===
     execution_decision: str            # COMPLETE / REPLAN / ASK_USER / WAIT / CANCELLED

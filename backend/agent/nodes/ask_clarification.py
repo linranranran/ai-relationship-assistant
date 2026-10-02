@@ -209,7 +209,13 @@ def _resume_after_free_text(state: AgentState, resume_value: Any) -> Command:
             "execution_errors": [],
             "next_tool_index": 0,
             "execution_decision": "",
-            "replan_feedback": {},
+            # 即使用户补充导致生成新计划，也不能忘掉旧计划已经完成的业务效果。
+            # 执行器还会按解析后的工具参数匹配 completed_mutations，防止模型重复写。
+            "replan_feedback": {
+                "reason": "用户补充信息，请仅规划剩余工作",
+                "completed_mutations": state.get("completed_mutations", []),
+                "previous_tool_results": state.get("tool_results", []),
+            },
             "replan_count": state.get("replan_count", 0) + 1,
             "response": "",
             "pending_reference": None,

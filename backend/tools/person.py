@@ -3,8 +3,14 @@
 # 每个函数接收 (**kwargs) 并返回一个 dict
 # ============================================================
 import logging
+import httpx
+from neo4j.exceptions import Neo4jError, ServiceUnavailable, SessionExpired
+from openai import APIConnectionError, APITimeoutError, RateLimitError, InternalServerError
 from backend.db import neo4j_client
 from backend.db import chroma_client
+from backend.db.neo4j_operations import (
+    OperationConflict, OperationNotFound, OperationPermissionDenied,
+)
 from backend.db.neo4j_client import get_neo4j_driver
 from backend.db.chroma_client import get_chroma_client, get_person_collection
 from backend.services.llm import get_llm_client
@@ -35,224 +41,142 @@ def tool_response(
         response["retryable"] = retryable
     return response
 
+def write_failure(exc: Exception, msg: str, *, business_committed: bool = False,
+                  data: dict | None = None) -> dict:
+    """写 Tool 共用错误分类，流程判断使用类型，不解析中文错误文案。"""
+    if business_committed:
+        # 此时回执已经落盘。只允许按原 key 重试索引同步，不能补偿删除图数据。
+        return tool_response(msg=msg, success=False, data=data,
+                             error_code=ToolErrorCode.TRANSIENT, retryable=True)
+    if isinstance(exc, OperationConflict):
+        code = ToolErrorCode.CONFLICT
+    elif isinstance(exc, OperationPermissionDenied):
+        code = ToolErrorCode.PERMISSION_DENIED
+    elif isinstance(exc, OperationNotFound):
+        code = ToolErrorCode.NOT_FOUND
+    elif isinstance(exc, (ValueError, TypeError)):
+        code = ToolErrorCode.INVALID_ARGUMENT
+    elif isinstance(exc, (ConnectionError, TimeoutError, httpx.TransportError,
+                          APIConnectionError, APITimeoutError, RateLimitError,
+                          InternalServerError, ServiceUnavailable, SessionExpired)):
+        # 连接中断可能发生在提交确认丢失之后，按原 key 重放回执才可确定结果。
+        code = ToolErrorCode.TRANSIENT
+    elif isinstance(exc, Neo4jError) and exc.is_retryable():
+        code = ToolErrorCode.TRANSIENT
+    else:
+        # 编程错误、错误配置以及未识别的永久故障不能诱导自动重试。
+        code = ToolErrorCode.UNKNOWN
+    return tool_response(msg=msg, success=False, data=data, error_code=code,
+                         retryable=code == ToolErrorCode.TRANSIENT)
+
+
+def _sync_person_index(driver, person_id: str, owner_id: str) -> str | None:
+    """把 Neo4j 当前事实同步到可重建的 Chroma 次级索引。
+
+    回执保留首次结果，但人物可能已被后续请求修改或删除，因此不能用旧回执
+    的人物快照生成向量。每次重试都读取最新图数据，避免覆盖之后的属性。
+    Chroma 的 upsert 用稳定 person_id 替换同一个文档，避免 delete+add
+    中间失败把原索引清空。两个存储没有共同事务，也不宣称分布式 exactly-once：
+    并发修改仍可能产生短暂滞后，原 key 重试或后续同步可再次收敛到图事实。
+    """
+    latest = neo4j_client.get_person_detail(driver, person_id, owner_id)
+    collection = get_person_collection(get_chroma_client())
+    if latest is None:
+        # 历史创建/更新重放时目标可能已经被删除，不得复活节点或旧索引。
+        chroma_client.delete_person_embedding(collection, person_id, owner_id)
+        return None
+    person_text = chroma_client.build_person_text(latest["person"])
+    embedding = embed_text(get_embedding_client(), person_text)
+    collection.upsert(ids=[person_id], embeddings=[embedding], documents=[person_text],
+                      metadatas=[{"person_id": person_id, "owner_id": owner_id}])
+    return person_id
+
+
 def add_person(**kwargs) -> dict:
-    """
-    新增一个人物。
-
-    流程：
-    1. 在 Neo4j 中创建 Person 节点
-    2. 将人物属性文本生成 embedding 存入 ChromaDB
-
-    需要从 kwargs 中获取：
-    - name, gender, birth_year, occupation, education, hobbies, personality, tags, note, photo_url
-    - 还需要 owner_id（当前用户 ID，由 Agent 注入）
-
-    Returns:
-        {"person_id": "p_xxx", "name": "张三", ...}
-    """
-    # ── 第 1 层：参数校验（零成本，先做） ──
+    """先原子提交图业务与回执，再同步索引；创建仍要求服务端幂等键。"""
     owner_id = kwargs.get("owner_id")
-    if not owner_id:
-        return tool_response(msg="缺少 owner_id，无法确定数据归属", success=False)
     idempotency_key = kwargs.get("idempotency_key")
-    if not idempotency_key:
-        return tool_response(msg="缺少服务端幂等键，无法安全创建人物", success=False)
-
-    # 只取允许存入的字段
-    param = {}
-    for key, value in kwargs.items():
-        if key in neo4j_client.ALLOWED_FIELDS_CN:
-            param[key] = value
-
+    if not owner_id or not idempotency_key:
+        return tool_response(msg="缺少 owner_id 或服务端幂等键，无法安全创建人物",
+                             success=False, error_code=ToolErrorCode.INVALID_ARGUMENT)
+    param = {key: value for key, value in kwargs.items() if key in neo4j_client.ALLOWED_FIELDS_CN}
     if not param.get("name"):
-        return tool_response(msg="缺少 name，无法创建人物", success=False)
-
-    # ── 第 2 层：按“最易炸 → 最稳定”的顺序编排 ──
-    person_id = None  # 用于回滚
-    created_by_current_attempt = False
+        return tool_response(msg="缺少 name，无法创建人物", success=False,
+                             error_code=ToolErrorCode.INVALID_ARGUMENT)
     driver = None
-
+    person = None
     try:
-        # 2.1 生成 embedding（外部 API，最可能炸）
-        emb_client = get_embedding_client()
-        person_text = chroma_client.build_person_text(param)
-        embedding = embed_text(emb_client, person_text)
-
-        # 2.2 写入 Neo4j（本地 Docker，基本不炸）
         driver = get_neo4j_driver()
-        person = neo4j_client.create_person(
-            driver,
-            param,
-            owner_id,
-            idempotency_key,
-        )
-        person_id = person["id"]
-        created_by_current_attempt = person.pop(
-            "_created_by_current_attempt",
-            False,
-        )
-
-        # 2.3 写入 ChromaDB（本地文件，基本不炸）
-        chroma_cli = get_chroma_client()
-        collection = get_person_collection(chroma_cli)
-        doc_id = chroma_client.embed_and_store_person(
-            collection,
-            person_id=person_id,
-            owner_id=owner_id,
-            text=person_text,
-            embedding=embedding,
-        )
-
-        person["document_id"] = doc_id
+        person = neo4j_client.create_person(driver, param, owner_id, idempotency_key)
+        doc_id = _sync_person_index(driver, person["id"], owner_id)
+        if doc_id is not None:
+            person["document_id"] = doc_id
         return tool_response(msg="创建成功", success=True, data=person)
-
-    except Exception as e:
-        # ── 补偿回滚：清理已写入的脏数据 ──
-        # 重试命中历史人物时绝不能删除它；只有本次新建的节点才允许补偿。
-        if person_id and created_by_current_attempt:
-            try:
-                neo4j_client.delete_person(driver, person_id, owner_id)
-            except Exception:
-                # 回滚失败也要继续抛原始错误
-                msg = f"创建人物失败,失败原因:{str(e)},但已生成人物id: {person_id},需要根据人物id回滚删除用户"
-                logger.error(msg, exc_info=True)
-                return tool_response(msg=msg, success=False)
-        logger.error(f"创建人物失败: {str(e)}", exc_info=True)
-        return tool_response(msg=f"创建人物失败: {str(e)}", success=False)
+    except Exception as exc:
+        logger.error("创建人物或同步索引失败", exc_info=True)
+        # 图已经提交时保留人物和独立回执。重试只重建索引，不会再次 CREATE。
+        message = "人物已保存，索引同步暂未完成，请按原请求重试" if person is not None else f"创建人物失败: {exc}"
+        return write_failure(exc, message, business_committed=person is not None, data=person)
     finally:
         if driver is not None:
             driver.close()
 
 
 def update_person(**kwargs) -> dict:
-    """
-    更新一个人物的信息。
-
-    需要：
-    - person_id: 人物 ID
-    - 其他要更新的字段
-
-    Returns:
-        更新后的人物完整信息
-    """
-    # TO-DO: 实现
-    #
-    # 提示：
-    # 1. 调用 backend.db.neo4j_client.update_person()
-    # 2. 如果更新了会影响语义搜索的字段（name, hobbies, occupation 等），
-    #    需要重新生成 embedding 并更新 ChromaDB
-
-    # 备注：
-    # note — 不建议进向量note是自由文本备注：
-    # "上次见面说想换工作"
-    # "欠我500块，催了三次"
-    # "他老婆是我大学同学李丽"
-    # 混进embedding文本后："张三，男，金融行业，爱好钓鱼，备注：欠我500块催了三次他老婆是我大学同学李丽"
-    # 1.噪音污染搜
-    # "谁喜欢钓鱼"时，note里的大量无关文本会稀释"钓鱼"的权重，反而降低搜索精度。
-    # 2.误匹配搜
-    # "大学同学" → 想找大学同学，但张三只是因为note里写了"他老婆是我大学同学"就命中——张三本人不是大学同学。
-
-    owner_id = kwargs.get("owner_id")
-    if not owner_id:
-        return tool_response(msg="缺少 owner_id，无法确定数据归属，无法更新人物信息", success=False)
-
-    person_id = kwargs.get("person_id")
-    if not person_id:
-        return tool_response(msg="缺少 person_id，无法更新人物信息", success=False)
+    """摘要和图写入都只使用本次补丁；旧值合并发生在数据库事务内。"""
+    owner_id, person_id = kwargs.get("owner_id"), kwargs.get("person_id")
+    if not owner_id or not person_id:
+        return tool_response(msg="缺少 owner_id 或 person_id，无法更新人物信息",
+                             success=False, error_code=ToolErrorCode.INVALID_ARGUMENT)
+    param = {key: value for key, value in kwargs.items() if key in neo4j_client.ALLOWED_FIELDS_CN}
     driver = None
+    person = None
     try:
-        need_reindex = any(f in kwargs for f in EMBEDDING_FIELDS)
-        # 2.0 需要先查询老数据，在老数据的基础上新增、修改新的数据
-        param = {}
-        for key, value in kwargs.items():
-            if key in neo4j_client.ALLOWED_FIELDS_CN:
-                param[key] = value
         driver = get_neo4j_driver()
-        current_person = neo4j_client.get_person_detail(driver, person_id, owner_id)
-        if not current_person:
-            return tool_response(msg="未获取到人物信息", success=False)
-        # 2.0 合并：旧数据打底，新数据覆盖
-        param = {**current_person["person"], **param}
-
-        if need_reindex:
-            # 2.1 生成 embedding（外部 API，最可能炸）
-            emb_client = get_embedding_client()
-            person_text = chroma_client.build_person_text(param)
-            embedding = embed_text(emb_client, person_text)
-
-        # 2.2 更新 Neo4j（本地 Docker，基本不炸）
-        person = neo4j_client.update_person(driver, person_id, param, owner_id)
-
-        if need_reindex:
-            # 2.3 更新 ChromaDB（本地文件，基本不炸）
-            chroma_cli = get_chroma_client()
-            collection = get_person_collection(chroma_cli)
-            doc_id = chroma_client.embed_and_store_person(
-                collection,
-                person_id=person_id,
-                owner_id=owner_id,
-                text=person_text,
-                embedding=embedding,
-            )
-            person["document_id"] = doc_id
+        key_args = {"idempotency_key": kwargs["idempotency_key"]} if "idempotency_key" in kwargs else {}
+        # 不能在 Tool 中读取整个人物再传回 UPDATE：旧请求重试会覆盖后来新值，
+        # 参数摘要也会随目标状态变化。回执检查必须先于任何目标存在性检查。
+        person = neo4j_client.update_person(driver, person_id, param, owner_id, **key_args)
+        if any(field in param for field in EMBEDDING_FIELDS):
+            doc_id = _sync_person_index(driver, person_id, owner_id)
+            if doc_id is not None:
+                person["document_id"] = doc_id
         return tool_response(msg="更新人物成功", success=True, data=person)
-
-    except Exception as e:
-        logger.error(f"更新人物失败: {str(e)}", exc_info=True)
-        return tool_response(msg=f"更新人物失败: {str(e)}", success=False)
+    except Exception as exc:
+        logger.error("更新人物或同步索引失败", exc_info=True)
+        message = "人物更新已保存，索引同步暂未完成，请按原请求重试" if person is not None else f"更新人物失败: {exc}"
+        return write_failure(exc, message, business_committed=person is not None, data=person)
     finally:
         if driver is not None:
             driver.close()
 
 
 def delete_person(**kwargs) -> dict:
-    """
-    删除一个人物。
-
-    需要：
-    - person_id: 人物 ID
-    - confirmed: 用户是否已确认
-
-    Returns:
-        {"success": True, "person_name": "张三"}
-    """
-    # TO-DO: 实现
-    #
-    # 提示：
-    # 1. 如果 confirmed 不为 True，返回 {"needs_confirmation": True}
-    # 2. 调用 backend.db.neo4j_client.delete_person()
-    # 3. 调用 backend.db.chroma_client.delete_person_embedding()
-    confirmed = kwargs.get("confirmed")
-    if confirmed is not True:
-        return {
-            **tool_response(msg="需要用户手动确认是否删除人物", success=False),
-            "needs_confirmation": True,
-        }
-
-    person_id = kwargs.get("person_id")
-    if not person_id:
-        return tool_response(msg="缺少 person_id，无法删除人物信息", success=False)
-
-    owner_id = kwargs.get("owner_id")
-    if not owner_id:
-        return tool_response(msg="缺少 owner_id，无法确定数据归属", success=False)
-
-    neo4j_driver = None
+    """删除业务的成功回执独立保存；索引失败不回滚已确认的图删除。"""
+    if kwargs.get("confirmed") is not True:
+        return {**tool_response(msg="需要用户手动确认是否删除人物", success=False),
+                "needs_confirmation": True}
+    person_id, owner_id = kwargs.get("person_id"), kwargs.get("owner_id")
+    if not person_id or not owner_id:
+        return tool_response(msg="缺少 person_id 或 owner_id，无法删除人物信息",
+                             success=False, error_code=ToolErrorCode.INVALID_ARGUMENT)
+    driver = None
+    committed = False
     try:
-        neo4j_driver = get_neo4j_driver()
-        neo4j_delete_flag = neo4j_client.delete_person(neo4j_driver, person_id, owner_id)
-        chroma_cli = get_chroma_client()
-        collection = get_person_collection(chroma_cli)
-        chroma_delete_flag = chroma_client.delete_person_embedding(collection, person_id, owner_id)
-
+        driver = get_neo4j_driver()
+        key_args = {"idempotency_key": kwargs["idempotency_key"]} if "idempotency_key" in kwargs else {}
+        neo4j_client.delete_person(driver, person_id, owner_id, **key_args)
+        committed = True
+        collection = get_person_collection(get_chroma_client())
+        chroma_client.delete_person_embedding(collection, person_id, owner_id)
         return tool_response(msg="删除成功", success=True)
-    except Exception as e:
-        logger.error(f"删除人物失败: {str(e)}", exc_info=True)
-        return tool_response(msg=f"删除人物失败: {str(e)}", success=False)
+    except Exception as exc:
+        logger.error("删除人物或清理索引失败", exc_info=True)
+        message = "人物已删除，索引清理暂未完成，请按原请求重试" if committed else f"删除人物失败: {exc}"
+        return write_failure(exc, message, business_committed=committed)
     finally:
-        if neo4j_driver is not None:
-            neo4j_driver.close()
+        if driver is not None:
+            driver.close()
 
 
 def find_person(**kwargs) -> dict:

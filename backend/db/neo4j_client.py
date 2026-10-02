@@ -1,9 +1,15 @@
 # ============================================================
 # Neo4j 连接管理
 # ============================================================
+import hashlib
+
 from neo4j import GraphDatabase, Driver, Query
 from backend.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 from backend.common import common_tool
+from backend.db.neo4j_operations import (
+    canonical_json, execute_operation, ensure_schema,
+    OperationNotFound, OperationPermissionDenied,
+)
 
 ALLOWED_FIELDS_CN = {"name":"姓名", "gender":"性别", "birth_year":"出生年月", "occupation":"职业","education":"学历", "hobbies":"爱好", "personality":"性格", "tags":"标签", "note":"备注"}
 
@@ -51,152 +57,116 @@ def get_neo4j_driver() -> Driver:
 # 每个函数签名+docstring 已经写好，你只需要实现函数体
 # ============================================================
 
-def create_person(
-    driver: Driver,
-    properties: dict,
-    owner_id: str,
-    idempotency_key: str,
-) -> dict:
-    """
-    在 Neo4j 中创建一个 Person 节点。
+def _owned_person(tx, person_id: str, owner_id: str) -> dict:
+    """事务内读取本人保护标志；所有查询都以服务端 owner_id 隔离。"""
+    record = tx.run(
+        """
+        OPTIONAL MATCH (p:Person {id: $person_id})
+        WHERE p.owner_id = $owner_id
+        RETURN p {.*} AS person
+        """, person_id=person_id, owner_id=owner_id,
+    ).single()
+    if record is None or record["person"] is None:
+        raise OperationNotFound(f"人物不存在或无权修改: {person_id}")
+    return dict(record["person"])
 
-    Args:
-        driver: Neo4j 驱动
-        properties: 人物属性 dict，包含 name, gender, birth_year, occupation,
-                    education, hobbies, personality, tags, note 等
-        owner_id: 创建者用户 ID
-        idempotency_key: 服务端生成的业务幂等键，同一次 Tool 重试必须相同
 
-    Returns:
-        {"person_id": "p_xxx", "name": "张三", ...}
-
-    Example:
-        create_person(
-            driver,
-            {"name": "张三", "occupation": "金融"},
-            "user_1",
-            "user_1:call_xxx",
-        )
-        {"person_id": "p_089", "name": "张三", "occupation": "金融", ...}
-    """
+def create_person(driver: Driver, properties: dict, owner_id: str,
+                  idempotency_key: str) -> dict:
+    """创建人物和独立业务回执；人物后来被删除也不会因旧请求复活。"""
     if not idempotency_key:
         raise ValueError("create_person — 缺少 idempotency_key")
+    defaults = {"name": "", "gender": "未知", "hobbies": [], "tags": []}
+    # 对实际写入的完整默认值做摘要，相同含义的省略字段可稳定重放。
+    values = {field: properties.get(field, defaults.get(field))
+              for field in ALLOWED_FIELDS_CN}
+    person_id = common_tool.generate_prefix_uuid("p_")
+    # 旧版本用原始 key 建立唯一属性；新版本回执按 owner+key 隔离。
+    # 新节点使用带版本标记的 owner/key 摘要，避免不同用户复用原始 key 时
+    # 被旧的全局人物约束误判冲突。旧节点仍按原始 key 和 owner 一起查找。
+    operation_person_key = "receipt:v2:" + hashlib.sha256(
+        canonical_json([owner_id, idempotency_key]).encode("utf-8")
+    ).hexdigest()
 
-    with driver.session() as session:
-        person_id = common_tool.generate_prefix_uuid("p_")
-        create_properties = ",\n".join(
-            f"p.{field} = ${field}" for field in ALLOWED_FIELDS_CN.keys()
-        )
-        result = session.run(
+    def write(tx):
+        # 旧节点没有原始参数摘要或历史结果，升级只能接纳其当前快照并补回执；
+        # 不能追溯验证旧请求最初的参数。补建后所有重放都受新摘要约束保护。
+        # 复用旧节点时不执行 SET，尤其不能覆盖升级之前后续请求修改的字段。
+        record = tx.run(
             f"""
-            MERGE (p:Person {{created_by_operation: $idempotency_key}})
-            ON CREATE SET
-                p.id = $id,
-                p.owner_id = $owner_id,
-                p.created_at = datetime(),
-                {create_properties}
-            WITH p
-            WHERE p.owner_id = $owner_id
-            RETURN p {{{COMMON_PERSON_RETURN_FIELD_NAME}}} AS person""",
-            id=person_id,
-            idempotency_key=idempotency_key,
-            name=properties.get("name", ""),
-            gender=properties.get("gender", "未知"),
-            birth_year=properties.get("birth_year"),
-            occupation=properties.get("occupation"),
-            education=properties.get("education"),
-            hobbies=properties.get("hobbies", []),
-            personality=properties.get("personality"),
-            tags=properties.get("tags", []),
-            note=properties.get("note"),
-            owner_id=owner_id,
-        )
-        record = result.single()
+            OPTIONAL MATCH (legacy:Person {{created_by_operation: $idempotency_key}})
+            WHERE legacy.owner_id = $owner_id
+            WITH legacy
+            CALL {{
+                WITH legacy
+                WITH legacy WHERE legacy IS NOT NULL
+                RETURN legacy AS p
+                UNION
+                WITH legacy
+                WITH legacy WHERE legacy IS NULL
+                MERGE (p:Person {{created_by_operation: $operation_person_key}})
+                ON CREATE SET p.id = $id, p.owner_id = $owner_id,
+                              p.created_at = datetime(),
+                              {build_update_cql(None)}
+                RETURN p
+            }}
+            WITH p WHERE p.owner_id = $owner_id
+            RETURN p {{{COMMON_PERSON_RETURN_FIELD_NAME}}} AS person
+            """, id=person_id, owner_id=owner_id, idempotency_key=idempotency_key,
+            operation_person_key=operation_person_key, **values,
+        ).single()
         if record is None:
-            raise ValueError("幂等键已被其他用户占用")
-        person = dict(record["person"])
-        # 仅供 Tool 内部决定异常时能否回滚，不能作为业务字段写回 Neo4j。
-        person["_created_by_current_attempt"] = person.get("id") == person_id
-        return person
+            raise RuntimeError("创建人物未返回业务结果")
+        return dict(record["person"])
+
+    return execute_operation(driver, owner_id, idempotency_key, "add_person", values, write)
 
 
-def update_person(driver: Driver, person_id: str, properties: dict, owner_id: str) -> dict:
-    """
-    更新一个 Person 节点的属性。只更新传入的字段。
+def update_person(driver: Driver, person_id: str, properties: dict, owner_id: str,
+                  idempotency_key: str | None = None) -> dict:
+    """只写本次补丁；重试读取历史回执，绝不覆盖之后其他请求修改的字段。"""
+    allowed = {key: value for key, value in properties.items() if key in ALLOWED_FIELDS_CN}
 
-    Args:
-        driver: Neo4j 驱动
-        person_id: 人物 ID
-        properties: 要更新的字段 dict，只包含需要修改的字段
-
-    Returns:
-        更新后的完整人物信息
-
-    Raises:
-        ValueError: 人物不存在
-    """
-    check = get_person_detail(driver, person_id, owner_id)
-    if check is None:
-        raise ValueError(f"人物不存在或无权修改: {person_id}")
-
-    allowed_properties = {
-        key: value for key, value in properties.items() if key in ALLOWED_FIELDS_CN
-    }
-    if not allowed_properties:
-        return check["person"]
-
-    params = {**allowed_properties, "id": person_id, "owner_id": owner_id}
-    set_str = build_update_cql(allowed_properties)
-    with driver.session() as session:
-        result = session.run(
+    def write(tx):
+        current = _owned_person(tx, person_id, owner_id)
+        if not allowed:
+            return {key: current.get(key) for key in ("id", *ALLOWED_FIELDS_CN)}
+        record = tx.run(
             f"""
             MATCH (p:Person {{id: $id}})
             WHERE p.owner_id = $owner_id
-            SET {set_str}
+            SET {build_update_cql(allowed)}
             RETURN p {{{COMMON_PERSON_RETURN_FIELD_NAME}}} AS person
-            """,
-            **params,
-        )
-        record = result.single()
+            """, id=person_id, owner_id=owner_id, **allowed,
+        ).single()
         if record is None:
-            raise ValueError(f"人物不存在或无权修改: {person_id}")
-        return record["person"]
+            raise OperationNotFound(f"人物不存在或无权修改: {person_id}")
+        return dict(record["person"])
+
+    return execute_operation(driver, owner_id, idempotency_key, "update_person",
+                             {"person_id": person_id, "properties": allowed}, write)
 
 
-def delete_person(driver: Driver, person_id: str, owner_id: str) -> bool:
-    """
-    删除一个人物节点及其所有关系。
+def delete_person(driver: Driver, person_id: str, owner_id: str,
+                  idempotency_key: str | None = None) -> bool:
+    """删除人物和边，但保留 BusinessOperation 回执以支持删除后的重放。"""
+    def write(tx):
+        person = _owned_person(tx, person_id, owner_id)
+        if person.get("is_self"):
+            raise OperationPermissionDenied("不能删除当前账号绑定的本人节点")
+        record = tx.run(
+            """
+            MATCH (p:Person {id: $id, owner_id: $owner_id})
+            DETACH DELETE p
+            RETURN count(p) AS deleted
+            """, id=person_id, owner_id=owner_id,
+        ).single()
+        if record is None or record["deleted"] == 0:
+            raise OperationNotFound(f"人物不存在或无权删除: {person_id}")
+        return True
 
-    Args:
-        driver: Neo4j 驱动
-        person_id: 人物 ID
-
-    Returns:
-        True 表示删除成功
-
-    Raises:
-        ValueError: 人物不存在
-    """
-    check = get_person_detail(driver, person_id, owner_id)
-    if check is None:
-        raise ValueError(f"delete_person — 未找到该用户,id={person_id}")
-    if check["person"].get("is_self"):
-        raise ValueError("不能删除当前账号绑定的本人节点")
-    else:
-        with driver.session() as session:
-            result = session.run(
-                """
-                MATCH (p:Person {id: $id, owner_id: $owner_id})
-                DETACH DELETE p
-                RETURN count(p) AS deleted
-                """,
-                id=person_id,
-                owner_id=owner_id,
-            )
-            record = result.single()
-            if record is not None and record.get("deleted", 1) == 0:
-                raise ValueError(f"人物不存在或无权删除: {person_id}")
-            return True
+    return execute_operation(driver, owner_id, idempotency_key, "delete_person",
+                             {"person_id": person_id}, write)
 
 
 def find_person_exact(driver: Driver, name: str, owner_id: str) -> dict | None:
@@ -263,106 +233,85 @@ def find_person_fuzzy(driver: Driver, query: str, owner_id: str, limit: int = 5)
         return [record["person"] for record in result]
 
 
-def add_relation(
-    driver: Driver,
-    from_person_id: str,
-    to_person_id: str,
-    relation_type: str,
-    owner_id: str,
-    through_person_id: str | None = None,
-    note: str | None = None,
-) -> dict:
-    """
-    在两个人之间创建关系边。
+def add_relation(driver: Driver, from_person_id: str, to_person_id: str,
+                 relation_type: str, owner_id: str, through_person_id: str | None = None,
+                 note: str | None = None, idempotency_key: str | None = None) -> dict:
+    """只在首次事务内创建关系；同一 key 的并发重试拿到同一个 relation_id。"""
+    rel_id = common_tool.generate_prefix_uuid("r_")
+    arguments = {"from_person_id": from_person_id, "to_person_id": to_person_id,
+                 "relation_type": relation_type, "through_person_id": through_person_id,
+                 "note": note}
 
-    Args:
-        driver: Neo4j 驱动
-        from_person_id: 起点人物 ID
-        to_person_id: 终点人物 ID
-        relation_type: 关系类型，如 "父亲"、"朋友"、"同事"
-        owner_id: 当前用户 ID
-        through_person_id: 通过谁认识的（可选）
-        note: 关系备注（可选）
-
-    Returns:
-        {"relation_id": "r_xxx", "from": "p_xxx", "to": "p_yyy", "type": "朋友"}
-    """
-    # TO-DO: 实现
-    #
-    # 提示：
-    # 1. 先检查两个人物是否存在
-    # 2. 检查是否已存在相同的关系（避免重复）
-    # 3. Cypher 创建关系：
-    #    MATCH (a:Person {id: $from_id}), (b:Person {id: $to_id})
-    #    CREATE (a)-[:RELATION {
-    #        id: $rel_id, type: $type, owner: $owner_id,
-    #        through: $through, note: $note, created_at: datetime()
-    #    }]->(b)
-    #    RETURN ...
-    from_person = get_person_detail(driver, from_person_id, owner_id)
-    if from_person is None:
-        raise ValueError(f"add_relation — 未找到指定用户,id={from_person_id}")
-
-    to_person = get_person_detail(driver, to_person_id, owner_id)
-    if to_person is None:
-        raise ValueError(f"add_relation — 未找到指定用户,id={to_person_id}")
-
-    #查询关系
-    with driver.session() as session:
-        rel_id = common_tool.generate_prefix_uuid("r_")
-        result = session.run("""
+    def write(tx):
+        if through_person_id is not None:
+            _owned_person(tx, through_person_id, owner_id)
+        record = tx.run(
+            """
             MATCH (a:Person {id: $from_person_id, owner_id: $owner_id}),
                   (b:Person {id: $to_person_id, owner_id: $owner_id})
             CREATE (a)-[:RELATION {
-               id: $rel_id, type: $type, owner: $owner_id,
-               through: $through, note: $note, created_at: datetime()
+                id: $rel_id, type: $type, owner: $owner_id,
+                through: $through, note: $note, created_at: datetime()
             }]->(b)
             RETURN a.name AS from_name, b.name AS to_name, $rel_id AS relation_id
-            """,
-            from_person_id = from_person_id,
-            to_person_id = to_person_id,
-            rel_id = rel_id,
-            type = relation_type,
-            owner_id = owner_id,
-            through = through_person_id,
-            note = note
-        )
-        return result.single()
+            """, from_person_id=from_person_id, to_person_id=to_person_id,
+            rel_id=rel_id, type=relation_type, owner_id=owner_id,
+            through=through_person_id, note=note,
+        ).single()
+        if record is None:
+            raise OperationNotFound("关系端点人物不存在或无权访问")
+        # Record 直接进入 tool_response 会被当成非 JSON 数据；保留原有三个
+        # 字段名称，但立即转成普通 dict，后续回执和 Agent 引用都使用该结构。
+        return dict(record)
+
+    return execute_operation(driver, owner_id, idempotency_key, "add_relation", arguments, write)
 
 
-def delete_relation(driver: Driver, relation_id: str, owner_id: str) -> bool:
-    """删除一条关系边。"""
-    with driver.session() as session:
-        # 删除一条关系边（仅限自己的数据）
-        result = session.run(
+def delete_relation(driver: Driver, relation_id: str, owner_id: str,
+                    idempotency_key: str | None = None) -> bool:
+    """删除边与记录成功回执同事务提交，重复删除不再依赖边的存在。"""
+    def write(tx):
+        record = tx.run(
             """MATCH (a:Person)-[r:RELATION {id: $id}]->(b:Person)
                WHERE r.owner = $owner_id
-                 AND a.owner_id = $owner_id
-                 AND b.owner_id = $owner_id
+                 AND a.owner_id = $owner_id AND b.owner_id = $owner_id
                DELETE r
                RETURN count(r) AS deleted""",
-            id=relation_id,
-            owner_id=owner_id,
-        )
-        if result.single()["deleted"] == 0:
-            raise ValueError(f"关系不存在或无权删除: {relation_id}")
+            id=relation_id, owner_id=owner_id,
+        ).single()
+        if record is None or record["deleted"] == 0:
+            raise OperationNotFound(f"关系不存在或无权删除: {relation_id}")
         return True
 
+    return execute_operation(driver, owner_id, idempotency_key, "delete_relation",
+                             {"relation_id": relation_id}, write)
 
-def update_relation(driver: Driver,relation_id: str,new_type:str, owner_id: str , new_note:str , new_through:str) -> bool:
-    with driver.session() as session:
-        # SET 也能改——type 只是一个普通属性，不是 Cypher 的关系类型。但你改了 type 之后，add_relation 里那份数据就跟它不一致了。
-        result = session.run(
+
+def update_relation(driver: Driver, relation_id: str, new_type: str | None,
+                    owner_id: str, new_note: str | None, new_through: str | None,
+                    idempotency_key: str | None = None) -> bool:
+    """部分修改在事务内合并；摘要只绑定请求补丁，不能绑定重试时的新旧值。"""
+    def write(tx):
+        if new_through is not None:
+            _owned_person(tx, new_through, owner_id)
+        record = tx.run(
             """MATCH (a:Person)-[r:RELATION {id: $id}]->(b:Person)
             WHERE r.owner = $owner_id
-              AND a.owner_id = $owner_id
-              AND b.owner_id = $owner_id
-            SET
-            r.type = $new_type, r.note = $new_note, r.through = $new_through
-            RETURN count(r) AS updated""" , id=relation_id, owner_id=owner_id,new_type=new_type,new_note = new_note,new_through=new_through)
-        if result.single()["updated"] == 0:
-            raise ValueError(f"关系不存在或无权修改: {relation_id}")
+              AND a.owner_id = $owner_id AND b.owner_id = $owner_id
+            SET r.type = coalesce($new_type, r.type),
+                r.note = coalesce($new_note, r.note),
+                r.through = coalesce($new_through, r.through)
+            RETURN count(r) AS updated""", id=relation_id, owner_id=owner_id,
+            new_type=new_type, new_note=new_note, new_through=new_through,
+        ).single()
+        if record is None or record["updated"] == 0:
+            raise OperationNotFound(f"关系不存在或无权修改: {relation_id}")
         return True
+
+    return execute_operation(driver, owner_id, idempotency_key, "update_relation",
+                             {"relation_id": relation_id, "new_type": new_type,
+                              "new_note": new_note, "new_through": new_through}, write)
+
 
 def get_relation_by_id(driver: Driver, relation_id: str, owner_id: str) -> dict | None:
     # 1. 查出旧边信息（拿到 from / to / 旧属性）
