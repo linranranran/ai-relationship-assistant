@@ -27,6 +27,7 @@ from backend.db.postgres_client import close_postgres_pool, open_postgres_pool
 from backend.db.agent_interaction_store import ensure_interaction_schema
 from backend.db.agent_session_lock import close_session_lock_pool
 from backend.db.agent_stream_store import ensure_stream_schema
+from backend.db.chat_history_store import ensure_history_schema
 from backend.agent.stream_runtime import AgentStreamRuntime
 from backend.config import AGENT_SSE_MAX_CONNECTIONS, AGENT_SSE_POLL_SECONDS, AGENT_RUN_LEASE_SECONDS, AGENT_EVENT_RETENTION, AGENT_CHECKPOINTER_BACKEND
 from backend.routers.stream import router as stream_router
@@ -61,6 +62,7 @@ async def lifespan(_app: FastAPI):
         # 仅初始化新增的人工答案回执表，已有业务/记忆表继续沿用现有迁移。
         ensure_interaction_schema()
         ensure_stream_schema()
+        ensure_history_schema()
         if AGENT_SSE_POLL_SECONDS <= 0 or AGENT_RUN_LEASE_SECONDS < 30 or AGENT_EVENT_RETENTION < 100 or AGENT_SSE_MAX_CONNECTIONS < 1:
             raise ValueError("流式配置无效：轮询间隔>0、租约>=30秒、事件保留>=100、连接数>=1")
         _app.state.agent_sse_slots = asyncio.Semaphore(AGENT_SSE_MAX_CONNECTIONS)

@@ -27,6 +27,11 @@ export const sendMessage = (message, requestId) =>
 export const getRequestStatus = (requestId) =>
   api.get(`/chat/requests/${encodeURIComponent(requestId)}`, { timeout: 10_000 })
 
+// 历史查询只读，不启动图；翻页游标是服务端返回的 message_id。
+export const getChatHistory = (before, signal) =>
+  api.get('/chat/history', { params: { limit: 40, ...(before ? { before } : {}) },
+    timeout: 10_000, signal })
+
 // 恢复 LangGraph interrupt。payload 三选一：
 // { confirmed: boolean } / { candidate_id: string } / { answer: string }
 export const resumeInteraction = (interruptId, payload) =>

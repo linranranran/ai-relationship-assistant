@@ -7,7 +7,7 @@ import logging
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from langgraph.types import Command
 from starlette.concurrency import run_in_threadpool
 from backend.agent.request_recovery import RecoveryConflict, run_or_recover, interrupted_state
@@ -21,6 +21,7 @@ from backend.models.schemas import (
     CancelAgentRequest,
     ChatRequest,
     ChatResponse,
+    ChatHistoryResponse,
     ClarificationPrompt,
     ConfirmationPrompt,
     ResumeAgentRequest,
@@ -374,6 +375,33 @@ def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
         if isinstance(exc, RecoveryConflict):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail="Agent 执行失败，请使用原请求 ID 重试") from exc
+
+
+@router.get("/history", response_model=ChatHistoryResponse)
+def get_chat_history(
+    before: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 40,
+    current_user: dict = Depends(get_current_user),
+):
+    """加载当前账号默认会话，浏览器不能指定 owner_id 或其他人的 thread_id。
+
+    同步只读接口由 FastAPI 放入线程池，不阻塞 SSE 的事件循环。返回最终问答
+    和当前待处理任务；历史中断按钮不会被重新激活，前端还需查询最新任务状态。
+    """
+    from backend.db.chat_history_store import HistoryCursorError, load_chat_history
+    from backend.routers.stream import task_response
+    owner_id = current_user["user_id"]
+    try:
+        page = load_chat_history(owner_id=owner_id, conversation_id=DEFAULT_CONVERSATION_ID,
+                                 thread_id=derive_thread_id(owner_id), before=before, limit=limit)
+    except HistoryCursorError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    pending = page.pop("pending")
+    page["pending_request"] = {
+        "request_id": pending["request_id"], "message": pending["message"],
+        "created_at": pending["created_at"], "response": task_response(pending),
+    } if pending else None
+    return page
 
 
 @router.get("/requests/{request_id}", response_model=ChatResponse)

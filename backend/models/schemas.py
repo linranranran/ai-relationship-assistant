@@ -131,6 +131,28 @@ class ChatResponse(BaseModel):
     clarification: Optional[ClarificationPrompt] = None
 
 
+class ChatHistoryMessage(BaseModel):
+    message_id: str
+    request_id: str
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: datetime
+
+
+class ChatHistoryPending(BaseModel):
+    request_id: str
+    message: str
+    created_at: datetime
+    response: ChatResponse
+
+
+class ChatHistoryResponse(BaseModel):
+    messages: list[ChatHistoryMessage]
+    has_more: bool
+    next_cursor: Optional[str] = None
+    pending_request: Optional[ChatHistoryPending] = None
+
+
 class PersonResponse(BaseModel):
     id: str
     name: str

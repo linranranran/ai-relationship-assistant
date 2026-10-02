@@ -1,16 +1,20 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Button, Input, Loading, MessagePlugin } from 'tdesign-react'
+import { MessagePlugin } from 'tdesign-react'
 import {
   cancelInteraction,
   createRequestId,
   getRequestStatus,
+  getChatHistory,
   resumeInteraction,
   sendMessage,
   subscribeRequest,
   stopRequest,
 } from '../api/chat'
-import { MAX_CHAT_MESSAGE_LENGTH, validateChatMessage } from '../validation/requests'
+import { validateChatMessage } from '../validation/requests'
+import { historyMessages, makeMessage, mergeMessages } from '../chat/messages'
+import ChatLayout from '../chat/ChatLayout'
+import './Chat.css'
 
 const readPendingRequest = (storageKey) => {
   const rawPending = localStorage.getItem(storageKey)
@@ -36,24 +40,21 @@ const loadPendingMessages = (storageKey) => {
   const pending = readPendingRequest(storageKey)
   if (!pending) return []
   return [
-    { role: 'user', content: pending.text },
+    makeMessage('user', pending.text, pending.requestId),
     pending.interaction
-      ? {
-          role: 'assistant',
-          content: pending.response,
+      ? makeMessage('assistant', pending.response, pending.requestId, {
+          key: `${pending.requestId}:interaction:${pending.interaction.interrupt_id}`,
           interaction: pending.interaction,
-        }
+        })
       : pending.statusCheck
-        ? {
-            role: 'assistant',
-            content: '恢复请求可能仍在后端执行，请查询当前状态。',
+        ? makeMessage('assistant', '正在找回上次任务的最新状态…', pending.requestId, {
+            key: `${pending.requestId}:pending`,
             statusCheck: pending,
-          }
-      : {
-          role: 'assistant',
-          content: '上一次请求没有收到最终结果，可以使用原请求 ID 查询或重试。',
+          })
+      : makeMessage('assistant', '上次任务尚未完成，可以查询状态或继续执行。', pending.requestId, {
+          key: `${pending.requestId}:pending`,
           retry: pending,
-        },
+        }),
   ]
 }
 
@@ -61,7 +62,13 @@ export default function Chat() {
   const navigate = useNavigate()
   const user = JSON.parse(localStorage.getItem('user') || '{}')
   const pendingStorageKey = `agent_pending_request:${user.user_id || user.phone || 'current'}`
-  const [messages, setMessages] = useState(() => loadPendingMessages(pendingStorageKey))
+  const [messages, setMessages] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyError, setHistoryError] = useState('')
+  const [historyPage, setHistoryPage] = useState({ hasMore: false, cursor: null })
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [historyReload, setHistoryReload] = useState(0)
+  const [awayFromBottom, setAwayFromBottom] = useState(false)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [streaming, setStreaming] = useState(false)
@@ -69,13 +76,30 @@ export default function Chat() {
   const [progress, setProgress] = useState([])
   const [draft, setDraft] = useState(null)
   const streamRef = useRef(null)
-  const busy = sending || streaming
+  const busy = sending || streaming || historyLoading
   const bottomRef = useRef(null)
+  const scrollRef = useRef(null)
+  const composerRef = useRef(null)
+  const stickToBottom = useRef(true)
+  const pageAbortRef = useRef(null)
+  const prependAnchor = useRef(null)
   const pendingInteraction = readPendingRequest(pendingStorageKey)?.interaction
 
-  // 自动滚动到底部
+  // 只有用户仍在底部时才跟随增量。翻阅旧消息时，不让每个 token 把页面拉走。
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (stickToBottom.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [messages, draft, progress, historyLoading])
+
+  useLayoutEffect(() => {
+    const anchor = prependAnchor.current
+    prependAnchor.current = null
+    if (anchor?.element.isConnected && scrollRef.current) {
+      // 只补偿阅读锚点的位置变化。底部草稿新增高度不会改变该消息的位置，
+      // 因而不会被错误地计入“历史消息高度”。在浏览器绘制前恢复，避免闪跳。
+      scrollRef.current.scrollTop += anchor.element.getBoundingClientRect().top - anchor.top
+    }
   }, [messages])
 
   const appendAgentResponse = (data, pending) => {
@@ -86,10 +110,11 @@ export default function Chat() {
         response: data.response,
         interaction,
       }))
-      setMessages((prev) => [
-        ...clearPendingPrompts(prev),
-        { role: 'assistant', content: data.response, interaction },
-      ])
+      setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
+        makeMessage('assistant', data.response, pending.requestId, {
+          key: `${pending.requestId}:interaction:${interaction.interrupt_id}`, interaction,
+        }),
+      ]))
       return
     }
 
@@ -99,10 +124,11 @@ export default function Chat() {
         requestId: pending.requestId,
         statusCheck: true,
       }))
-      setMessages((prev) => [
-        ...clearPendingPrompts(prev),
-        { role: 'assistant', content: data.response, statusCheck: pending },
-      ])
+      setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
+        makeMessage('assistant', data.response, pending.requestId, {
+          key: `${pending.requestId}:pending`, statusCheck: pending,
+        }),
+      ]))
       return
     }
 
@@ -111,18 +137,18 @@ export default function Chat() {
       // 后端会从检查点继续，并读取已持久化的人工答案，不能创建一个新任务。
       const retry = { text: pending.text, requestId: pending.requestId }
       localStorage.setItem(pendingStorageKey, JSON.stringify(retry))
-      setMessages((prev) => [
-        ...clearPendingPrompts(prev),
-        { role: 'assistant', content: data.response, retry },
-      ])
+      setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
+        makeMessage('assistant', data.response, pending.requestId, {
+          key: `${pending.requestId}:pending`, retry,
+        }),
+      ]))
       return
     }
 
     localStorage.removeItem(pendingStorageKey)
-    setMessages((prev) => [
-      ...clearPendingPrompts(prev),
-      { role: 'assistant', content: data.response },
-    ])
+    setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
+      makeMessage('assistant', data.response, pending.requestId),
+    ]))
   }
 
   const showStatusCheck = (pending, message) => {
@@ -133,10 +159,11 @@ export default function Chat() {
       requestId: pending.requestId,
       statusCheck: true,
     }))
-    setMessages((prev) => [
-      ...clearPendingPrompts(prev),
-      { role: 'assistant', content: message, statusCheck: pending },
-    ])
+    setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
+      makeMessage('assistant', message, pending.requestId, {
+        key: `${pending.requestId}:pending`, statusCheck: pending,
+      }),
+    ]))
   }
 
   const startStream = (pending) => {
@@ -209,33 +236,112 @@ export default function Chat() {
       setMessages((previous) => clearPendingPrompts(previous))
       startStream(active)
     } else {
+      streamRef.current?.abort()
+      setStreaming(false)
+      setDraft(null)
       appendAgentResponse(data, pending)
     }
   }
 
   useEffect(() => {
-    // 刷新页面先查询权威状态，再恢复 SSE；不自动重发上一次提问或人工答案。
-    const pending = readPendingRequest(pendingStorageKey)
+    // 数据库是历史记录的来源；localStorage 只补足尚未收到受理回执的请求。
+    // 先装入历史，再查询任务权威状态，最后订阅 SSE，防止历史覆盖流式新消息。
+    const controller = new AbortController()
     let disposed = false
-    if (pending && !pending.interaction) {
-      getRequestStatus(pending.requestId).then(({ data }) => {
-        if (!disposed) receiveResponse(data, { ...pending, cursor: 0 })
-      }).catch(() => { /* 保留页面上的查询/重试按钮。 */ })
+    setHistoryLoading(true)
+    setStreaming(false)
+    setHistoryError('')
+    const initialize = async () => {
+      let pending = readPendingRequest(pendingStorageKey)
+      try {
+        const { data } = await getChatHistory(null, controller.signal)
+        if (disposed) return
+        setMessages(historyMessages(data.messages))
+        setHistoryPage({ hasMore: data.has_more, cursor: data.next_cursor })
+        if (data.pending_request) {
+          // 即使换浏览器，也能发现服务端的待处理任务，不依赖旧页面缓存。
+          pending = { requestId: data.pending_request.request_id,
+            text: data.pending_request.message, statusCheck: true }
+          localStorage.setItem(pendingStorageKey, JSON.stringify(pending))
+        }
+      } catch (error) {
+        if (disposed) return
+        setHistoryError(error.response?.data?.detail || '历史消息暂时加载失败')
+      }
+      if (pending && !disposed) {
+        setMessages((previous) => mergeMessages(previous, loadPendingMessages(pendingStorageKey)))
+        try {
+          const { data } = await getRequestStatus(pending.requestId)
+          if (!disposed) receiveResponse(data, { ...pending, cursor: 0 })
+        } catch (error) {
+          if (disposed) return
+          if (error.response?.status === 404) {
+            // 服务端明确不存在的请求不能永远占住输入框；保留输入供用户重发。
+            localStorage.removeItem(pendingStorageKey)
+            setMessages((previous) => clearPendingPrompts(previous))
+            setInput(pending.text)
+          }
+          // 其他网络故障仍保留查询/重试按钮，不把 HTTP 错误当作业务取消。
+        }
+      }
+      if (!disposed) setHistoryLoading(false)
     }
+    initialize()
     return () => {
       disposed = true
+      controller.abort()
+      pageAbortRef.current?.abort()
       streamRef.current?.abort() // 只关闭订阅，绝不取消后端任务。
     }
     // 按登录用户只恢复一次。receiveResponse 每次渲染都会重新创建，加入依赖
     // 会使每个 token 都关闭/重建连接；异步回调只调用稳定的状态 setter。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingStorageKey])
+  }, [pendingStorageKey, historyReload])
+
+  const loadOlder = async () => {
+    if (loadingOlder || !historyPage.cursor) return
+    const controller = new AbortController()
+    pageAbortRef.current = controller
+    stickToBottom.current = false
+    setLoadingOlder(true)
+    try {
+      const { data } = await getChatHistory(historyPage.cursor, controller.signal)
+      if (controller.signal.aborted) return
+      const scroll = scrollRef.current
+      if (scroll) {
+        // 网络等待期间用户可能继续滚动，必须在应用数据前取当前阅读位置。
+        // React 消息 key 稳定，prepend 不会卸载这条消息，可以直接保存 DOM 锚点。
+        const visible = [...scroll.querySelectorAll('.chat-message')].find(
+          (element) => element.getBoundingClientRect().bottom > scroll.getBoundingClientRect().top,
+        ) || scroll.querySelector('.chat-progress') || bottomRef.current
+        if (visible) prependAnchor.current = { element: visible, top: visible.getBoundingClientRect().top }
+      }
+      setMessages((previous) => mergeMessages(previous, historyMessages(data.messages), true))
+      setHistoryPage({ hasMore: data.has_more, cursor: data.next_cursor })
+    } catch (error) {
+      if (!controller.signal.aborted) MessagePlugin.error(error.response?.data?.detail || '更早的消息加载失败，请重试')
+    } finally {
+      if (!controller.signal.aborted) setLoadingOlder(false)
+    }
+  }
+
+  const scrollToLatest = () => {
+    stickToBottom.current = true
+    setAwayFromBottom(false)
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }
+
+  const usePrompt = (text) => {
+    setInput(text)
+    composerRef.current?.focus()
+  }
 
   const handleStop = async () => {
     const pending = readPendingRequest(pendingStorageKey)
     if (!pending) return
     try {
-      await stopRequest(pending.requestId)
+      const { data } = await stopRequest(pending.requestId)
+      receiveResponse(data, pending)
       MessagePlugin.info('已请求停止后续步骤，正在等待当前操作返回。')
     } catch (error) {
       MessagePlugin.error(error.response?.data?.detail || '暂时无法停止，请查询状态')
@@ -246,10 +352,12 @@ export default function Chat() {
     if (busy) return
     const pending = { text, requestId }
     localStorage.setItem(pendingStorageKey, JSON.stringify(pending))
+    stickToBottom.current = true
+    setAwayFromBottom(false)
     setMessages((prev) => {
       const withoutRetryPrompt = clearPendingPrompts(prev)
       return appendUserMessage
-        ? [...withoutRetryPrompt, { role: 'user', content: text }]
+        ? mergeMessages(withoutRetryPrompt, [makeMessage('user', text, requestId)])
         : withoutRetryPrompt
     })
     setSending(true)
@@ -263,18 +371,16 @@ export default function Chat() {
         // 明确拒绝受理时没有后台任务，不把一个不存在的 request_id 永久挂起。
         localStorage.removeItem(pendingStorageKey)
         setInput(text)
-        setMessages((previous) => [...previous, { role: 'assistant', content: detail }])
+        setMessages((previous) => [...previous, makeMessage('assistant', detail, requestId)])
         MessagePlugin.error(detail)
         return
       }
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `${detail}。重试会继续使用原来的 request_id，不会创建新任务。`,
+      setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
+        makeMessage('assistant', `${detail}。可以查询状态或继续原任务。`, requestId, {
+          key: `${requestId}:pending`,
           retry: pending,
-        },
-      ])
+        }),
+      ]))
       MessagePlugin.error(detail)
     } finally {
       setSending(false)
@@ -340,7 +446,7 @@ export default function Chat() {
     if (pending?.interaction?.interrupt_id !== interaction.interrupt_id) {
       setMessages((prev) => [
         ...clearInteractions(prev),
-        { role: 'assistant', content: '交互信息已失效，请直接输入新问题。' },
+        makeMessage('assistant', '交互信息已失效，请直接输入新问题。'),
       ])
       return
     }
@@ -348,7 +454,9 @@ export default function Chat() {
     if (visibleAnswer) {
       setMessages((prev) => [
         ...clearInteractions(prev),
-        { role: 'user', content: visibleAnswer },
+        makeMessage('user', visibleAnswer, pending.requestId, {
+          key: `${pending.requestId}:answer:${interaction.interrupt_id}`,
+        }),
       ])
     } else {
       setMessages((prev) => clearInteractions(prev))
@@ -381,7 +489,7 @@ export default function Chat() {
       if (expired) {
         setMessages((prev) => [
           ...clearPendingPrompts(prev),
-          { role: 'assistant', content: `${detail}。请直接输入新问题。` },
+          makeMessage('assistant', `${detail}。请直接输入新问题。`),
         ])
       } else {
         showStatusCheck(pending, `${detail}。可能仍在后端执行，请查询当前状态。`)
@@ -424,7 +532,7 @@ export default function Chat() {
         localStorage.removeItem(pendingStorageKey)
         setMessages((prev) => [
           ...clearPendingPrompts(prev),
-          { role: 'assistant', content: `${detail}。请重新发起新问题。` },
+          makeMessage('assistant', `${detail}。请重新发起新问题。`),
         ])
       } else {
         showStatusCheck(pending, `${detail}。请查询当前状态，确认取消是否完成。`)
@@ -442,177 +550,21 @@ export default function Chat() {
     navigate('/login')
   }
 
-  return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: '#f5f5f5' }}>
-      {/* 顶栏 */}
-      <header style={{
-        padding: '12px 16px', background: '#0052d9', color: '#fff',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      }}>
-        <span style={{ fontWeight: 600 }}>AI 人际关系助手</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 13, opacity: 0.85 }}>{user.phone}</span>
-          <Button variant="text" style={{ color: '#fff' }} onClick={handleLogout}>
-            退出
-          </Button>
-        </div>
-      </header>
-
-      {/* 消息列表 */}
-      <main style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-        {messages.length === 0 && (
-          <div style={{ textAlign: 'center', color: '#999', marginTop: 120 }}>
-            <p style={{ fontSize: 18, marginBottom: 8 }}>👋 你好！</p>
-            <p>试试说：我认识了新朋友张三 / 查一下李四是谁 / 我和张三什么关系</p>
-          </div>
-        )}
-        {messages.map((msg, i) => (
-          <div key={i} style={{
-            display: 'flex', marginBottom: 16,
-            justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
-          }}>
-            {msg.role === 'assistant' && (
-              <span style={{ marginRight: 8, flexShrink: 0, fontSize: 20 }}>🤖</span>
-            )}
-            <div style={{
-              maxWidth: '70%', padding: '10px 16px', borderRadius: 12,
-              background: msg.role === 'user' ? '#0052d9' : '#fff',
-              color: msg.role === 'user' ? '#fff' : '#333',
-              boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            }}>
-              {msg.content}
-              {msg.retry && (
-                <div style={{ marginTop: 10 }}>
-                  <Button
-                    size="small"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => handleRetry(msg.retry)}
-                  >
-                    使用原请求重试
-                  </Button>
-                </div>
-              )}
-              {msg.statusCheck && (
-                <div style={{ marginTop: 10 }}>
-                  <Button
-                    size="small"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => handleCheckStatus(msg.statusCheck)}
-                  >
-                    查询当前状态
-                  </Button>
-                </div>
-              )}
-              {msg.interaction?.tool_names && (
-                <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
-                  <Button
-                    size="small"
-                    theme="primary"
-                    disabled={busy}
-                    onClick={() => submitResume(msg.interaction, { confirmed: true }, '确认执行')}
-                  >
-                    确认
-                  </Button>
-                </div>
-              )}
-              {msg.interaction?.clarification_type === 'CANDIDATE_SELECTION' && (
-                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {msg.interaction.candidates.map((candidate) => (
-                    <Button
-                      key={candidate.id}
-                      size="small"
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => submitResume(
-                        msg.interaction,
-                        { candidate_id: candidate.id },
-                        `选择：${candidate.label}`,
-                      )}
-                    >
-                      {candidate.label}{candidate.description ? ` · ${candidate.description}` : ''}
-                    </Button>
-                  ))}
-                </div>
-              )}
-              {msg.interaction?.clarification_type === 'FREE_TEXT' && (
-                <div style={{ marginTop: 8 }}>
-                  <div style={{ marginBottom: 8, fontSize: 12, color: '#777' }}>
-                    在下方输入补充信息，然后明确点击“提交补充信息”。
-                  </div>
-                  <Button
-                    size="small"
-                    theme="primary"
-                    disabled={busy}
-                    onClick={() => handleSubmitClarification(msg.interaction)}
-                  >
-                    提交补充信息
-                  </Button>
-                </div>
-              )}
-              {msg.interaction && (
-                <div style={{ marginTop: 10 }}>
-                  <Button
-                    size="small"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => submitCancel(msg.interaction)}
-                  >
-                    取消当前任务
-                  </Button>
-                </div>
-              )}
-            </div>
-            {msg.role === 'user' && (
-              <span style={{ marginLeft: 8, flexShrink: 0, fontSize: 20 }}>👤</span>
-            )}
-          </div>
-        ))}
-        {(busy || progress.length > 0) && (
-          <div style={{ display: 'flex', marginBottom: 16 }}>
-            <span style={{ marginRight: 8, fontSize: 20 }}>🤖</span>
-            <div style={{ padding: '10px 16px', borderRadius: 12, background: '#fff' }}>
-              {busy && <Loading size="small" text={connection === 'reconnecting'
-                ? '进度连接恢复中，后台继续执行…'
-                : progress.at(-1)?.message || '任务已提交，等待执行…'} />}
-              {progress.length > 0 && <details style={{ marginTop: 8, fontSize: 12, color: '#777' }}>
-                <summary>查看执行进度</summary>
-                {progress.map((item) => <div key={item.seq}>{item.message}</div>)}
-              </details>}
-              {streaming && <Button size="small" variant="text" onClick={handleStop}>停止后续步骤</Button>}
-            </div>
-          </div>
-        )}
-        {draft?.text && <div style={{ padding: 16, marginBottom: 16, background: '#fff',
-          borderRadius: 12, whiteSpace: 'pre-wrap' }}>{draft.text}</div>}
-        <div ref={bottomRef} />
-      </main>
-
-      {/* 输入框 */}
-      <footer style={{
-        padding: 12, background: '#fff', borderTop: '1px solid #e7e7e7',
-        display: 'flex', gap: 8,
-      }}>
-        <Input
-          value={input}
-          onChange={setInput}
-          onEnter={handleSend}
-          placeholder="输入消息，按 Enter 发送..."
-          maxLength={MAX_CHAT_MESSAGE_LENGTH}
-          disabled={busy}
-          style={{ flex: 1 }}
-        />
-        <Button
-          theme="primary"
-          onClick={handleSend}
-          loading={busy}
-          disabled={busy || Boolean(pendingInteraction)}
-        >
-          发送新问题
-        </Button>
-      </footer>
-    </div>
-  )
+  return <ChatLayout user={user} messages={messages}
+    view={{ input, busy, sending, streaming, connection, progress, draft,
+      historyLoading, historyError, historyPage, loadingOlder, awayFromBottom,
+      pendingInteraction, pendingRequest: readPendingRequest(pendingStorageKey) }}
+    scrollRef={scrollRef} bottomRef={bottomRef} composerRef={composerRef}
+    actions={{ input: setInput, send: handleSend, clarify: handleSubmitClarification,
+      retry: handleRetry, check: handleCheckStatus, resume: submitResume,
+      cancel: submitCancel, stop: handleStop, logout: handleLogout,
+      prompt: usePrompt, loadOlder, latest: scrollToLatest,
+      reloadHistory: () => setHistoryReload((version) => version + 1),
+      scroll: (event) => {
+        const element = event.currentTarget
+        const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 120
+        stickToBottom.current = atBottom
+        setAwayFromBottom(!atBottom)
+      },
+    }} />
 }
