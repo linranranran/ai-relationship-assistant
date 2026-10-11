@@ -53,6 +53,37 @@ def canonical_json(value: Any) -> str:
     )
 
 
+def read_committed_operations(owner_id: str, calls: list[dict]) -> dict[str, dict]:
+    """预算耗尽后的只读核对：不重放 Tool，不同步索引，也不创建约束。
+
+    PG running/failed 不能证明 Neo4j 没有提交。以同事务保存的业务回执确认
+    写入事实，按 owner + 服务端 call_id 隔离，并核对工具名称。
+    只允许核对已经在 PG 领取过执行权的调用，由收尾节点筛选后传入。
+    """
+    if not calls:
+        return {}
+    from neo4j import GraphDatabase, Query
+    from backend.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+    expected = {call["call_id"]: call["tool"] for call in calls}
+    with GraphDatabase.driver(
+        NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD), connection_timeout=5,
+        connection_acquisition_timeout=5, max_transaction_retry_time=0,
+    ) as driver:
+        with driver.session() as session:
+            rows = session.run(Query("""
+                MATCH (op:BusinessOperation {owner_id: $owner_id})
+                WHERE op.idempotency_key IN $keys AND op.result_json IS NOT NULL
+                RETURN op.idempotency_key AS call_id, op.operation AS operation,
+                       op.result_json AS result_json
+                """, timeout=5), owner_id=owner_id, keys=list(expected)).data()
+    return {
+        row["call_id"]: {"success": True, "data": json.loads(row["result_json"]),
+                         "msg": "已从业务回执确认写入；关联索引可能需要补同步",
+                         "reconciled": True, "auxiliary_pending": True}
+        for row in rows if expected.get(row["call_id"]) == row["operation"]
+    }
+
+
 def execute_operation(driver, owner_id: str, idempotency_key: str | None,
                       operation: str, arguments: dict, write: Callable) -> Any:
     """返回首次提交的业务结果；回执不依赖业务节点或关系是否仍然存在。

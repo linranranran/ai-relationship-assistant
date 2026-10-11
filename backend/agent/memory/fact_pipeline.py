@@ -33,10 +33,22 @@ def extract_fact_candidates(
     """将成功写操作转换为确定性候选；查询 Tool 和失败步骤不会产生记忆。"""
     if not evidence_message_id:
         raise ValueError("事实候选必须有用户消息证据")
+    calls_by_id = {
+        call["call_id"]: call for call in tool_calls
+        if isinstance(call, dict) and call.get("call_id")
+    }
+    # 旧测试/旧记录可能只有 step_id。只有唯一的步骤才允许降级匹配，
+    # 多目标和重规划中 step_id 都只是局部标识，不能据此关联事实。
+    step_counts = {}
+    for call in tool_calls:
+        if isinstance(call, dict):
+            step = call.get("step_id")
+            step_counts[step] = step_counts.get(step, 0) + 1
     calls_by_step = {
         call.get("step_id"): call
         for call in tool_calls
         if isinstance(call, dict) and isinstance(call.get("step_id"), str)
+        and step_counts[call["step_id"]] == 1
     }
     candidates: list[MemoryWriteCandidate] = []
     seen: set[tuple[str, str]] = set()
@@ -47,7 +59,8 @@ def extract_fact_candidates(
             or record.get("status") != ToolStepStatus.SUCCESS.value
         ):
             continue
-        call = calls_by_step.get(record.get("step_id"))
+        call = (calls_by_id.get(record["call_id"]) if record.get("call_id")
+                else calls_by_step.get(record.get("step_id")))
         if not call:
             continue
         tool_name = call.get("tool")

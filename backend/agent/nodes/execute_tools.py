@@ -12,6 +12,7 @@ from neo4j.time import Duration as Neo4jDuration
 from neo4j.time import Time as Neo4jTime
 from neo4j import Record
 from backend.agent.tracing import trace_event
+from backend.agent.audit import audit_tool, record_tool_result
 from backend.agent.streaming import check_execution, emit_progress, ExecutionCancelled, TOOL_LABELS
 
 from backend.agent.confirmation import HIGH_RISK_TOOLS, build_confirmation_request
@@ -93,7 +94,7 @@ def _mutation_target(tool: str, args: dict, result: dict):
     return ("relation", args.get("relation_id"))
 
 
-def _remember_mutation(records: list[dict], call: dict, args: dict, result: dict, version: int):
+def _remember_mutation(records: list[dict], call: dict, args: dict, result: dict, version: int, goal_id=None):
     target = _mutation_target(call["tool"], args, result)
     for previous in records:
         same_target = _mutation_target(previous["tool"], previous["args"], previous["result"]) == target
@@ -106,7 +107,7 @@ def _remember_mutation(records: list[dict], call: dict, args: dict, result: dict
         if same_target or deleted_endpoint:
             previous["reusable"] = False
     records.append({"tool": call["tool"], "call_id": call["call_id"], "args": args,
-                    "result": result, "plan_version": version, "reusable": True})
+                    "result": result, "plan_version": version, "goal_id":goal_id, "reusable": True})
 
 
 def _missing_person_probe_steps(
@@ -287,7 +288,27 @@ def _invoke_tool_with_retry(tool_name: str, runtime_args: dict, *,
                 break
             emit_progress("tool.retrying", tool=tool_name, call_id=call_id, step_id=step_id,
                           attempt=attempt + 1, message="临时故障，正在重试工具")
-        result = _serializable_tool_value(execute_tool(tool_name, **runtime_args))
+        from backend.agent.budget import reserve,settle,BudgetExceeded
+        try:
+            budget_attempt = reserve("tool",call_id or step_id or tool_name)
+        except BudgetExceeded:
+            if not attempt:
+                raise  # 第一次就被拒绝，没有 Tool 结果需要保存。
+            # 第二次被拒绝时，先把第一次真实返回的失败事实写入 PG/Checkpoint。
+            # 收尾通过只读业务回执确认是否已经提交，不能丢掉第一次调用的结果。
+            break
+        # 再次进入真实工具才计数，PG 缓存/Checkpoint 已完成结果不会经过此处。
+        try:
+            # 节点回调展示完整状态；这一层单独记录真正发给 Tool 的已解析参数。
+            # 同一个 call_id 的重试也分别可见，缓存命中不会经过此处。
+            with audit_tool(tool_name, runtime_args, call_id=call_id,
+                            step_id=step_id, attempt=attempt + 1) as observation:
+                result = _serializable_tool_value(execute_tool(tool_name, **runtime_args))
+                record_tool_result(observation, result)
+        except Exception:
+            settle(budget_attempt)
+            raise
+        settle(budget_attempt,result={"success":bool(result.get("success"))})
         if result.get("success"):
             break
 
@@ -508,7 +529,8 @@ def execute_tools(state: AgentState) -> Command:
                          if item.get("tool") == call["tool"]
                          and item.get("args") == business_args
                          and item.get("reusable", True)
-                         and item.get("plan_version", -1) != state.get("replan_count", 0)), None)
+                         and item.get("goal_id") == state.get("active_goal_id")
+                         and item.get("plan_version", -1) != state.get("plan_revision",state.get("replan_count", 0))), None)
         if call["tool"] in BUSINESS_IDEMPOTENT_TOOLS and previous is not None:
             result = previous["result"]
             records.append(_record(call, ToolStepStatus.RESOLVED, result=result))
@@ -537,13 +559,14 @@ def execute_tools(state: AgentState) -> Command:
         claim = _claim(state, call, resolved_args)
 
         if claim.action == ExecutionClaimAction.WAIT:
+            trace_event("tool.cached", tool=call["tool"], call_id=call["call_id"], step_id=step_id)
             emit_progress("tool.reused", tool=call["tool"], call_id=call["call_id"],
                           step_id=step_id, message="复用已保存的工具结果")
             records.append(_record(call, ToolStepStatus.SUCCESS, result=claim.result))
             results_by_step[step_id] = claim.result
             if call["tool"] in BUSINESS_IDEMPOTENT_TOOLS:
                 _remember_mutation(completed_mutations, call, business_args, claim.result,
-                                   state.get("replan_count", 0))
+                                   state.get("plan_revision",state.get("replan_count", 0)),state.get("active_goal_id"))
             continue
 
         if claim.action == ExecutionClaimAction.IN_PROGRESS:
@@ -567,17 +590,25 @@ def execute_tools(state: AgentState) -> Command:
             )
             continue
 
-        result, latency_ms = _invoke_tool_with_retry(
-            call["tool"], _runtime_args(state, call, resolved_args),
-            call_id=call["call_id"], step_id=step_id,
-        )
+        from backend.agent.budget import BudgetExceeded
+        try:
+            result, latency_ms = _invoke_tool_with_retry(
+                call["tool"], _runtime_args(state, call, resolved_args),
+                call_id=call["call_id"], step_id=step_id,
+            )
+        except BudgetExceeded as exc:
+            # 前面步骤可能已写成功；先把本节点局部事实送入 Checkpoint，再收尾。
+            # 当前 tool claim 只是领取执行权，预算拒绝并不代表业务操作失败。
+            return Command(update={"tool_calls":tool_calls,"tool_results":records,"execution_errors":errors,
+                                   "completed_mutations":completed_mutations,"next_tool_index":index,
+                                   "budget_reason":str(exc)},goto="finish_budget")
         if result.get("success"):
             _save_success(
                 state, call, claim, result, latency_ms, records, errors, results_by_step
             )
             if call["tool"] in BUSINESS_IDEMPOTENT_TOOLS:
                 _remember_mutation(completed_mutations, call, business_args, result,
-                                   state.get("replan_count", 0))
+                                   state.get("plan_revision",state.get("replan_count", 0)),state.get("active_goal_id"))
             if missing_person_probes:
                 # 查无此人是新增的预期条件。新增成功后，从本轮观察结果中移除
                 # 这条“失败”，但 PostgreSQL tool_execution 仍保存原始查询审计。

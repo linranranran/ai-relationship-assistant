@@ -10,6 +10,9 @@ import logging
 from backend.agent.memory.models import MemoryJob, MemoryJobType, MemoryWriteCandidate
 from backend.agent.memory.runtime import MemoryRuntime
 from backend.agent.memory.summary_pipeline import run_summary_job
+from backend.agent.tracing import request_trace, trace_event
+from backend.agent.audit import record_request_result
+from backend.agent.session import derive_thread_id
 from backend.config import (
     AGENT_MEMORY_JOB_STALE_SECONDS,
     AGENT_MEMORY_WORKER_POLL_SECONDS,
@@ -70,13 +73,22 @@ def process_next_memory_job(runtime: MemoryRuntime) -> bool:
     if job is None:
         return False
     try:
-        _execute_job(runtime, job)
-        if not runtime.job_store.mark_succeeded(
-            owner_id=job.owner_id,
-            job_id=job.job_id,
-            execution_token=job.execution_token,
-        ):
-            logger.warning("记忆任务完成但租约已失效: job_id=%s", job.job_id)
+        # 后台任务已离开原 HTTP/图线程，必须显式恢复审计身份关联。
+        # 使用触发它的 request_id，同一 Trace 可以看到前台图与后台摘要两个批次。
+        with request_trace(job.request_id, derive_thread_id(job.owner_id), owner_id=job.owner_id,
+                           action=f"MEMORY_{job.job_type.value.upper()}", job_id=job.job_id,
+                           input={"job_type": job.job_type.value, "payload": job.payload,
+                                  "attempt": job.attempts, "conversation_id": job.conversation_id}):
+            _execute_job(runtime, job)
+            saved = runtime.job_store.mark_succeeded(
+                owner_id=job.owner_id,
+                job_id=job.job_id,
+                execution_token=job.execution_token,
+            )
+            trace_event("memory.job_finished", job_id=job.job_id, lease_valid=bool(saved))
+            record_request_result({"status": "succeeded" if saved else "lease_lost"})
+            if not saved:
+                logger.warning("记忆任务完成但租约已失效: job_id=%s", job.job_id)
     except Exception as exc:
         # 指数退避最大五分钟；错误只记录类型和受限文本，不记录完整 Prompt。
         retry_after = min(300, 5 * (2 ** max(0, job.attempts - 1)))

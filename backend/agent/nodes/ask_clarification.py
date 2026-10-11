@@ -201,6 +201,18 @@ def _resume_after_free_text(state: AgentState, resume_value: Any) -> Command:
             goto=END,
         )
 
+    if state.get("execution_version") == 2 and state.get("active_goal_id"):
+        from backend.agent.goal_policy import active_goal, replace_goal, archive_current_plan
+        goal = active_goal(state)
+        revision = state.get("plan_revision",0)+1
+        archived = {**state,"goals":archive_current_plan(state)}
+        goals = replace_goal(archived,clarifications=[*goal.get("clarifications",[]),normalized],plan_revision=revision)
+        # 澄清不重新拆解整条请求，不清空请求级预算和其他目标结果。
+        target = "refine_goal" if goal["intent"] == "UNCLEAR" else (
+            "extract_info" if goal["intent"] in {"ADD_PERSON","UPDATE_PERSON","ADD_RELATION","UPDATE_RELATION"} else "plan_tasks")
+        return Command(update={"goals":goals,"plan_revision":revision,"tool_calls":[],"tool_results":[],
+                               "execution_errors":[],"next_tool_index":0,"pending_confirmation":None,
+                               "pending_reference":None,"response":""},goto=target)
     return Command(
         update={
             "user_input": f"{state['user_input']}\n用户补充：{normalized}",
@@ -271,10 +283,19 @@ def ask_clarification(state: AgentState) -> Command:
     * clarification 只补全业务信息，永远不能注入 ``confirmed=True``；
     * confirmation 只授权已经确定的高风险操作，不能偷偷更换操作参数。
 
-    本节点在 ``interrupt`` 之前只读取 state、构造 payload，不执行 Tool 或写
-    数据库。LangGraph 恢复节点时会从头重放，所以这一限制非常重要。
+    本节点在 ``interrupt`` 前不执行业务 Tool。唯一的写入是按稳定操作摘要
+    幂等登记澄清预算；LangGraph 恢复时从头重放，不会重复扣费。
     """
     payload, ambiguous = _build_clarification_payload(state)
+    if state.get("execution_version") == 2:
+        from backend.agent.budget import reserve,settle
+        from hashlib import sha256
+        import json
+        key = sha256(json.dumps([state.get("active_goal_id"),state.get("plan_revision",0),
+                                (ambiguous or {}).get("call_id"),payload],
+                                sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+        attempt = reserve("clarification",key)
+        settle(attempt,result={"registered":True})  # 重放同一中断不消耗新的澄清轮次。
     resume_value = interrupt(payload)
 
     # 取消是用户显式结束本轮，不把“取消执行”当作补充文本继续规划。

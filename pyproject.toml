@@ -6,14 +6,16 @@ dependencies = [
     "fastapi==0.115.6",
     "uvicorn[standard]==0.34.0",
     "python-multipart==0.0.19",
-    # 业务层直接使用 OpenAI-compatible SDK；不依赖 LangChain 高层 Agent。
+    # 业务层使用 OpenAI-compatible SDK；LangChain 1.x 供官方 Langfuse 回调使用。
     # 避免旧版 langchain 对 langchain-core<0.4 的限制阻塞 LangGraph 1.x。
     # Agent V2 依赖 1.x 的 checkpoint、interrupt 和 Command resume 语义。
     # 升级此版本时，必须先通过 tests/compat/test_langgraph_runtime.py。
     "langgraph==1.2.12",
     # 生产 Checkpointer：持久化 interrupt、节点状态和恢复位置。
     "langgraph-checkpoint-postgres>=3.1.2",
-    "openai==1.58.1",
+    "openai>=1.109,<3",
+    "langchain-openai>=1,<2",
+    "langchain>=1,<2",
     "neo4j==5.27.0",
     "chromadb==0.6.3",
     "pydantic==2.10.4",
@@ -21,7 +23,7 @@ dependencies = [
     "python-dotenv==1.0.1",
     "httpx==0.28.1",
     "langsmith>=0.2.11",
-    "langfuse>=3.12.0",
+    "langfuse>=4.15.3,<5",
     "passlib[bcrypt]==1.7.4",
     "bcrypt==4.0.1",
     "python-jose[cryptography]==3.3.0",

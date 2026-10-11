@@ -11,7 +11,9 @@ from backend.agent.execution_policy import (
 from backend.agent.state import AgentState
 
 import logging
+
 logger = logging.getLogger(__name__)
+
 
 def _observe(state: AgentState) -> ExecutionObservation:
     """使用确定性策略解释执行结果，不调用大模型。"""
@@ -53,9 +55,29 @@ def _route_decision(
     """
     logger.info(f"5.1、观察节点反馈结果，decision={observation.decision}")
     if observation.decision == ExecutionDecision.COMPLETE:
-        return Command(update=update, goto="generate_response")
+        return Command(
+            update=update,
+            goto="finalize_goal"
+            if state.get("execution_version") == 2
+            else "generate_response",
+        )
 
     if observation.decision == ExecutionDecision.REPLAN:
+        if state.get("execution_version") == 2:
+            from backend.agent.budget import reserve, settle
+            from backend.agent.goal_policy import replace_goal
+
+            revision = state.get("plan_revision", 0) + 1
+            attempt = reserve("replan", f"{state['active_goal_id']}:{revision}")
+            settle(attempt, result={"revision": revision})
+            update.update(
+                plan_revision=revision,
+                goals=replace_goal(
+                    state,
+                    plan_revision=revision,
+                    auto_replans=state.get("replan_count", 0) + 1,
+                ),
+            )
         return Command(
             update={
                 **update,
@@ -73,6 +95,10 @@ def _route_decision(
             goto=END,
         )
 
+    if state.get("execution_version") == 2:
+        # 只有用户能解决的歧义/冲突才询问。权限失败和内部错误不能靠补充文本绕过。
+        if not set(observation.error_codes) & {"AMBIGUOUS", "CONFLICT"}:
+            return Command(update=update, goto="finalize_goal")
     return Command(update=update, goto="ask_clarification")
 
 

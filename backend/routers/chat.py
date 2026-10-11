@@ -12,6 +12,7 @@ from langgraph.types import Command
 from starlette.concurrency import run_in_threadpool
 from backend.agent.request_recovery import RecoveryConflict, run_or_recover, interrupted_state
 from backend.agent.tracing import request_trace, trace_event
+from backend.agent.audit import graph_audit_config, record_request_result
 from backend.db.agent_session_lock import lock_agent_session, SessionBusy
 from backend.db.agent_interaction_store import get_interaction, save_interaction
 from backend.db.agent_request_store import has_tool_executions
@@ -27,6 +28,7 @@ from backend.models.schemas import (
     ResumeAgentRequest,
 )
 from backend.models.context import RequestContext
+from backend.config import AGENT_TASK_RECURSION_LIMIT
 from backend.agent.state import AgentState
 from backend.agent.graph import get_agent_graph
 from backend.agent.request_idempotency import (
@@ -62,6 +64,10 @@ def _graph_config(owner_id: str) -> dict:
     当前每个用户只有一个默认会话；支持多会话时还要校验 owner 归属。
     """
     return {
+        # 官方 CallbackHandler 记录图/节点和 LangChain 模型输入输出；
+        # 检查点 ID 与审计 ID 分开，审计配置不会改变图的恢复语义。
+        **graph_audit_config(),
+        "recursion_limit": AGENT_TASK_RECURSION_LIMIT,
         "configurable": {
             "thread_id": derive_thread_id(owner_id),
         }
@@ -98,9 +104,15 @@ def _pending_interrupt_payloads(snapshot) -> dict[str, dict]:
 def _to_chat_response(final_state: dict) -> ChatResponse:
     """把普通完成状态和暂停状态统一转换成 HTTP 响应。"""
     interaction = _extract_interrupt(final_state)
+    calls = final_state.get("tool_calls", [])
+    if final_state.get("execution_version") == 2:
+        # 当前工具数组只属于最后/中断中的目标，API 需要展示整次请求的工具。
+        # 按 call_id 合并，避免最后一个目标的数组被重复统计。
+        all_calls = [call for goal in final_state.get("goals",[]) for call in goal.get("tool_calls",[])]
+        calls = list({call["call_id"]:call for call in [*all_calls,*calls] if isinstance(call,dict)}.values())
     tool_names = [
         item.get("tool", "")
-        for item in final_state.get("tool_calls", [])
+        for item in calls
         if isinstance(item, dict)
     ]
 
@@ -150,7 +162,11 @@ def _to_chat_response(final_state: dict) -> ChatResponse:
         response=final_state.get("response") or "操作已完成。",
         intent=final_state.get("intent"),
         tool_calls=tool_names,
-        status="COMPLETED",
+        status=(final_state["execution_decision"] if final_state.get("execution_decision") in
+                {"PARTIALLY_COMPLETED","BUDGET_EXCEEDED"} else "COMPLETED"),
+        goals=[{"goal_id":g["goal_id"],"description":g["description"],"status":g["status"],
+                "failure_reason":g.get("failure_reason")} for g in final_state.get("goals",[])],
+        budget=final_state.get("budget_snapshot"),
     )
 
 
@@ -208,9 +224,12 @@ async def chat(
         request_id = _normalize_request_id(idempotency_key)
         thread_id = derive_thread_id(current_user["user_id"])
         try:
-            with request_trace(request_id, thread_id), lock_agent_session(thread_id):
+            with request_trace(request_id, thread_id, owner_id=current_user["user_id"],
+                               input={"message": request.message}), lock_agent_session(thread_id):
                 trace_event("request.start")
-                return _chat_sync(request, current_user, http_response, request_id)
+                result = _chat_sync(request, current_user, http_response, request_id)
+                record_request_result(result)
+                return result
         except SessionBusy as exc:
             # 新 request_id 可能尚未入库，不能伪造 RUNNING 让浏览器查询不存在的记录。
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -288,6 +307,7 @@ def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
             on_claim(claim.execution_token)
 
     initial_state = AgentState(
+        execution_version=2,goals=[],active_goal_id=None,plan_revision=0,budget_snapshot={},budget_reason="",
         user_input=request.message,
         user_id=context.owner_id,
         self_person_id=context.self_person_id,
@@ -487,7 +507,11 @@ def _handle_interaction(owner_id: str, interrupt_id: str, answer: dict, http_res
         save_interaction(owner_id, request_id, interrupt_id, answer)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    with request_trace(request_id, derive_thread_id(owner_id)):
+    with request_trace(request_id, derive_thread_id(owner_id), owner_id=owner_id,
+                       input={"answer": answer}, action="RESUME", interrupt_id=interrupt_id):
+        # 前面为校验读取的 config 可能没有审计上下文；实际恢复必须在根观察内生成。
+        config = _graph_config(owner_id)
+        trace_event("interaction.answer", interrupt_id=interrupt_id)
         claim = claim_agent_resume(owner_id=owner_id, request_id=request_id,
                                   **({"stale_after_seconds": stale_after_seconds} if stale_after_seconds is not None else {}))
         if claim.action == AgentRequestAction.RETURN_RESPONSE:
@@ -516,6 +540,7 @@ def _handle_interaction(owner_id: str, interrupt_id: str, answer: dict, http_res
                                     response=response.model_dump(mode="json"),
                                     execution_token=claim.execution_token)
             trace_event("interaction.finished", interrupt_id=interrupt_id, status=response.status)
+            record_request_result(response)
             return response
         except Exception as exc:
             trace_event("interaction.failed", interrupt_id=interrupt_id, error_type=type(exc).__name__)

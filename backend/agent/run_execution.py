@@ -13,6 +13,7 @@ from fastapi import Response
 from backend.agent.graph import get_agent_graph
 from backend.agent.streaming import StreamingGraph, execution_control, ExecutionCancelled
 from backend.agent.tracing import request_trace, trace_event
+from backend.agent.audit import record_request_result, record_event, record_execution_error
 from backend.db.agent_stream_store import claim_run, heartbeat, append_event, finish_run, RunLeaseLost
 from backend.db.agent_session_lock import lock_agent_session, SessionBusy
 from backend.db.agent_interaction_store import get_interaction
@@ -31,7 +32,7 @@ def _finish_cancellation(run, graph, on_claim):
                                 thread_id=run["thread_id"], message=run["input"]["message"],
                                 stale_after_seconds=0)
     if claim.action == AgentRequestAction.RETURN_RESPONSE:
-        if claim.response["status"] in {"COMPLETED", "CANCELLED"}:
+        if claim.response["status"] in {"COMPLETED", "PARTIALLY_COMPLETED", "BUDGET_EXCEEDED", "CANCELLED"}:
             return ChatResponse.model_validate(claim.response)
         from backend.agent.request_idempotency import claim_agent_resume
         claim = claim_agent_resume(owner_id=run["owner_id"], request_id=run["request_id"], stale_after_seconds=0)
@@ -72,8 +73,17 @@ def execute_run(run_id):
 
 
 def _execute_claimed(run):
+    # 审计包住执行和异常收尾：停止/失败的真实回执也必须在同一根观察内记录。
+    # 放在取得批次执行权之后、实际线程之内，不给 SSE 订阅创建额外执行 Trace。
+    with request_trace(run["request_id"], run["thread_id"], owner_id=run["owner_id"],
+                       input={"message": run["input"]["message"]}, action=run["action"],
+                       run_id=run["run_id"], interrupt_id=run.get("interrupt_id")):
+        _execute_with_audit(run)
+
+
+def _execute_with_audit(run):
     stop = Event()
-    state = {"cancelled": False, "lease_error": None, "request_token": None}
+    state = {"cancelled": False, "lease_error": None, "request_token": None, "budget_error": None}
     started = perf_counter()
     first_event = True
     last_check = 0.0
@@ -83,6 +93,10 @@ def _execute_claimed(run):
 
     def pulse():
         state["cancelled"] = heartbeat(run, state["request_token"])
+        from backend.agent.budget import execution_budget_run
+        from backend.db.agent_budget_store import BudgetStore
+        with execution_budget_run(run):
+            state["budget_error"] = BudgetStore(run["owner_id"],run["request_id"]).tick()
 
     def heartbeat_loop():
         while not stop.wait(max(1, min(15, AGENT_RUN_LEASE_SECONDS / 3))):
@@ -94,6 +108,9 @@ def _execute_claimed(run):
 
     def check(*, force=False):
         nonlocal last_check
+        from backend.agent.budget import current_budget, BudgetExceeded
+        if state["budget_error"] and current_budget() is not None:
+            raise BudgetExceeded(state["budget_error"])
         if state["lease_error"]:
             raise RunLeaseLost("执行线程无法确认自己仍持有执行权") from state["lease_error"]
         # 每个节点/工具边界强制读取；模型 token 循环最多每半秒读一次，避免逐字查PG。
@@ -118,7 +135,8 @@ def _execute_claimed(run):
         raw_graph = get_agent_graph()
         graph = StreamingGraph(raw_graph, publish)
         from backend.routers.chat import _chat_sync, _handle_interaction
-        with request_trace(run["request_id"], run["thread_id"]), execution_control(check):
+        from backend.agent.budget import execution_budget_run
+        with execution_control(check), execution_budget_run(run):
             trace_event("stream.execution_started", run_id=run["run_id"],
                         queue_ms=max(0, int((datetime.now(timezone.utc) - run["run_queued_at"]).total_seconds() * 1000)))
             if run["action"] == "STOP" or state["cancelled"]:
@@ -127,6 +145,8 @@ def _execute_claimed(run):
                 receipt = get_interaction(run["owner_id"], run["interrupt_id"])
                 if not receipt or receipt["request_id"] != run["request_id"]:
                     raise RuntimeError("恢复答案回执丢失")
+                record_event("interaction.answer", {"interrupt_id": run["interrupt_id"],
+                                                   "answer": receipt["answer"]})
                 response = _handle_interaction(run["owner_id"], run["interrupt_id"], receipt["answer"],
                                                Response(), graph_override=graph, on_claim=on_claim,
                                                stale_after_seconds=0)
@@ -138,11 +158,14 @@ def _execute_claimed(run):
             if response.status != "CANCELLED":
                 check(force=True)
             finish_run(run, response.model_dump(mode="json"))
+            record_request_result(response)
             trace_event("stream.finished", run_id=run["run_id"], status=response.status,
                         latency_ms=int((perf_counter() - started) * 1000))
-    except RunLeaseLost:
+    except RunLeaseLost as exc:
+        record_execution_error(exc, outcome="lease_lost")
         logger.warning("旧 Agent 执行批次停止写入: run_id=%s", run["run_id"])
     except Exception as exc:
+        record_execution_error(exc)
         logger.exception("Agent 批次失败: run_id=%s error_type=%s", run["run_id"], type(exc).__name__)
         try:
             pulse()
@@ -152,6 +175,7 @@ def _execute_claimed(run):
                 response = ChatResponse(request_id=run["request_id"], status="FAILED",
                                         response="执行暂未完成，请使用原请求重试；已成功的步骤会复用。")
             finish_run(run, response.model_dump(mode="json"))
+            record_request_result(response)
         except RunLeaseLost:
             pass
         except Exception:

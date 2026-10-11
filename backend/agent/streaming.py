@@ -12,6 +12,11 @@ from langgraph.config import get_stream_writer
 from backend.agent.request_recovery import interrupted_state
 
 STAGE_LABELS = {
+    "validate_goals": "检查多个目标及执行依赖",
+    "select_next_goal": "选择下一个业务目标",
+    "finalize_goal": "核验目标完成情况",
+    "finish_budget": "执行预算已到上限，保存已完成结果",
+    "refine_goal": "理解当前目标的补充信息",
     "resolve_person_reference": "识别本轮涉及的人物",
     "prepare_context": "加载相关记忆和聊天上下文",
     "classify_intent": "开始分析用户意图",
@@ -32,7 +37,7 @@ TOOL_LABELS = {
     "add_relation": "新增关系", "update_relation": "修改关系", "delete_relation": "删除关系",
 }
 CUSTOM_TYPES = frozenset({"tool.started", "tool.finished", "tool.retrying", "tool.reused",
-                          "response.started", "response.delta"})
+                          "response.started", "response.delta", "goal.started", "goal.finished"})
 _control = ContextVar("agent_execution_control", default=None)
 
 
@@ -91,7 +96,7 @@ class StreamingGraph:
                 if isinstance(data, dict) and data.get("type") in CUSTOM_TYPES:
                     # 白名单防止意外把 Tool 参数、数据库原始结果、模型推理内容发出去。
                     allowed = {key: value for key, value in data.items() if key in {
-                        "node", "step_id", "call_id", "message", "tool", "attempt",
+                        "node", "step_id", "call_id", "message", "tool", "attempt", "goal_id", "goal_status",
                         "success", "latency_ms", "response_id", "delta"}}
                     self.publish(data["type"], **allowed)
             elif part["type"] == "tasks":

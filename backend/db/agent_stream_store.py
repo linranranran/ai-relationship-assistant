@@ -207,6 +207,8 @@ def finish_run(run, response):
     status = response["status"]
     run_status, event_type = {
         "COMPLETED": ("completed", "request.completed"),
+        "PARTIALLY_COMPLETED": ("completed", "request.completed"),
+        "BUDGET_EXCEEDED": ("completed", "request.completed"),
         "CANCELLED": ("cancelled", "request.cancelled"),
         "CONFIRMATION_REQUIRED": ("waiting", "interaction.required"),
         "CLARIFICATION_REQUIRED": ("waiting", "interaction.required"),

@@ -7,6 +7,7 @@ Tool 真正接受的 ``confirmed=True``。
 from backend.db import neo4j_client
 from copy import deepcopy
 from typing import Any
+from pydantic import ValidationError
 from backend.common import common_tool
 from backend.tools.registry import TOOL_ARGUMENT_MODELS,TOOL_REGISTRY
 from backend.exception.AgentException import ToolPlanValidationError
@@ -28,14 +29,15 @@ def sanitize_model_tool_calls(
     raw_tool_calls: Any,
     request_id: str,
     plan_version: int = 0,
+    goal_id: str | None = None,
 ) -> list[dict]:
     """清洗模型产生的 Tool 计划。
 
     1. 按 Tool 定义校验必填参数和参数类型；
     2. 拒绝未知 Tool；
-    3. 使用 request_id 和步骤下标生成稳定 call_id，供重放和幂等控制使用。
+    3. 使用请求、目标、计划版本和步骤标识生成稳定 call_id，供重放和幂等控制使用。
 
-    当前骨架先完成最关键的权限隔离：模型不能伪造 owner_id 和 confirmed。
+    这里只验证和清洗，不执行工具；模型不能伪造 owner_id 和 confirmed。
     """
     if not isinstance(raw_tool_calls, list):
         return []
@@ -49,7 +51,11 @@ def sanitize_model_tool_calls(
         if not isinstance(item, dict):
             raise ToolPlanValidationError(f"第 {index + 1} 个 Tool 计划不是对象")
         if not isinstance(item.get("tool"), str) or item.get("tool") not in TOOL_REGISTRY:
-            raise ToolPlanValidationError(f"未知 Tool：{item.get('tool')}")
+            raise ToolPlanValidationError(
+                "模型选择了未知工具",
+                code="UNKNOWN_TOOL",
+                feedback="存在未定义的工具；请只使用当前目标展示的可用工具。",
+            )
         tool_name = item.get("tool")
         step_id, dependencies = build_step_metadata(item, index, known_step_ids)
         raw_args = item.get("args", {})
@@ -78,16 +84,32 @@ def sanitize_model_tool_calls(
             else:
                 validated_args = argument_model.model_validate(safe_args)
                 safe_args = validated_args.model_dump(exclude_none=True)
-        except Exception as e:
-            # 3.1 如果校验失败，把错误信息回传给 LLM，让它修正
-            print(f"参数校验失败：tool_name={tool_name}, tool_args={safe_args}")
-            raise ToolPlanValidationError(f"{tool_name} 参数校验失败：{e}")
-        # 同一个 request_id 重新规划时，步骤下标对应同一个 call_id。
-        # 如果模型把同一下标换成另一个 Tool，执行仓储会拒绝复用该 call_id，
-        # 从而选择安全失败，而不是重复产生业务副作用。
+        except ToolPlanValidationError:
+            raise  # $ref 的格式/依赖错误保留原有安全反馈。
+        except (ValidationError, ValueError) as e:
+            # Pydantic 的原始异常包含 input_value，不能直接写进日志或修复提示。
+            # 修复只需要知道合法工具的哪个字段出错，不需要再次回显客户资料。
+            if isinstance(e, ValidationError):
+                fields = sorted({
+                    str(error["loc"][0])
+                    for error in e.errors(include_input=False, include_context=False)
+                    if error["loc"] and error["loc"][0] in argument_model.model_fields
+                })
+                detail = "参数字段不合法：" + ", ".join(fields)
+            else:
+                detail = "缺少必填参数：" + ", ".join(missing)
+            raise ToolPlanValidationError(
+                f"{tool_name} 参数校验失败",
+                code="TOOL_ARGUMENT_INVALID",
+                feedback=f"{tool_name} {detail}。请按该工具的参数定义修正。",
+            ) from e
+        # 重放同一计划保留 call_id；真正重规划时 plan_version 改变。
+        # V2 再加入 goal_id，避免不同目标中同名 step_id 共用一条幂等记录。
+        # 工具仓储仍检查参数摘要，不允许同一 call_id 偷换操作内容。
         call_id = common_tool.generate_deterministic_prefix_uuid(
             "call_",
-            f"agent-request:{request_id}:plan:{plan_version}:step:{index}",
+            (f"agent-request:v2:{request_id}:goal:{goal_id}:plan:{plan_version}:step:{step_id}"
+             if goal_id else f"agent-request:{request_id}:plan:{plan_version}:step:{index}"),
         )
         sanitized.append(
             {

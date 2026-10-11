@@ -11,6 +11,7 @@ from backend.agent.memory.models import ConversationSummary, MemoryMessage, Memo
 from backend.agent.memory.runtime import MemoryRuntime
 from backend.agent.memory.token_budget import calculate_input_budget
 from backend.services.llm import chat, get_llm_client
+from backend.agent.audit import record_event
 
 
 SUMMARY_SECTIONS = (
@@ -120,10 +121,18 @@ def run_summary_job(
         covered_until_message_id=complete_messages[-1].message_id,
         version=previous.version if previous else 0,
     )
-    return runtime.summary_store.save_if_cursor_matches(
+    saved = runtime.summary_store.save_if_cursor_matches(
         summary=next_summary,
         expected_cursor=old_cursor,
     )
+    # 审计的是“通过证据校验后的摘要”及 CAS 结果，区别于模型 generation 的候选。
+    record_event("memory.summary_result", {
+        "summary": validated_content, "expected_cursor": old_cursor,
+        "next_cursor": next_summary.covered_until_message_id,
+        "base_version": next_summary.version, "saved": saved,
+        "source_message_ids": [message.message_id for message in complete_messages],
+    })
+    return saved
 
 
 def generate_updated_summary(

@@ -27,6 +27,10 @@ def run_or_recover(graph, config: dict, initial_state: dict, *, is_retry: bool,
     4. 图已完成但 HTTP/请求表保存失败，直接复用最终状态。
     5. WAIT 是主动结束本次运行，必须显式重入执行节点；保留原计划及成功结果。
     """
+
+    # Checkpoint确实保存了第一轮的工具结果，但第二轮的新请求会覆盖这些执行字段，只保留会话记忆，因此不会把第一轮的工具结果当成本轮结果。
+    # 这里要区分：加载旧状态和应用本轮输入是两个步骤。
+
     snapshot = graph.get_state(config)
     values = snapshot.values or {}
     request_id = initial_state["request_id"]

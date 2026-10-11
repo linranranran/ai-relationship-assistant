@@ -10,6 +10,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.config import HOST, PORT, LOG_LEVEL
+from backend.agent.audit import initialize_audit, shutdown_audit
 from backend.agent.graph import (
     close_agent_runtime,
     get_checkpointer_backend,
@@ -28,6 +29,7 @@ from backend.db.agent_interaction_store import ensure_interaction_schema
 from backend.db.agent_session_lock import close_session_lock_pool
 from backend.db.agent_stream_store import ensure_stream_schema
 from backend.db.chat_history_store import ensure_history_schema
+from backend.db.agent_budget_store import ensure_budget_schema
 from backend.agent.stream_runtime import AgentStreamRuntime
 from backend.config import AGENT_SSE_MAX_CONNECTIONS, AGENT_SSE_POLL_SECONDS, AGENT_RUN_LEASE_SECONDS, AGENT_EVENT_RETENTION, AGENT_CHECKPOINTER_BACKEND
 from backend.routers.stream import router as stream_router
@@ -53,6 +55,8 @@ async def lifespan(_app: FastAPI):
     memory_worker_stop = asyncio.Event()
     stream_runtime = None
     try:
+        # 先配置 SDK 单例/脱敏策略，再启动可能调用模型的图和后台工作者。
+        initialize_audit()
         # 任务记录可跨 Web 重启保存，图检查点也必须持久化，才能继续原计划。
         if AGENT_CHECKPOINTER_BACKEND.strip().lower() != "postgres":
             raise ValueError("可恢复流式执行需要 AGENT_CHECKPOINTER_BACKEND=postgres；memory 仅用于学习脚本")
@@ -63,6 +67,12 @@ async def lifespan(_app: FastAPI):
         ensure_interaction_schema()
         ensure_stream_schema()
         ensure_history_schema()
+        ensure_budget_schema()
+        from backend.agent.budget import BudgetLimits
+        BudgetLimits()
+        from backend.config import AGENT_TASK_RECURSION_LIMIT, LLM_STRUCTURED_METHOD
+        if AGENT_TASK_RECURSION_LIMIT < 8 or LLM_STRUCTURED_METHOD not in {"function_calling","json_schema","json_mode"}:
+            raise ValueError("图步数必须 >= 8，结构化输出方式必须是框架支持的方法")
         if AGENT_SSE_POLL_SECONDS <= 0 or AGENT_RUN_LEASE_SECONDS < 30 or AGENT_EVENT_RETENTION < 100 or AGENT_SSE_MAX_CONNECTIONS < 1:
             raise ValueError("流式配置无效：轮询间隔>0、租约>=30秒、事件保留>=100、连接数>=1")
         _app.state.agent_sse_slots = asyncio.Semaphore(AGENT_SSE_MAX_CONNECTIONS)
@@ -108,7 +118,11 @@ async def lifespan(_app: FastAPI):
             try:
                 close_session_lock_pool()
             finally:
-                close_postgres_pool()
+                try:
+                    close_postgres_pool()
+                finally:
+                    # 异步批量导出不阻塞每个 token；工作者退出后再提交剩余观察。
+                    await asyncio.to_thread(shutdown_audit)
         logger.info("Agent Checkpointer 已关闭")
         logger.info("PostgreSQL 业务连接池已关闭")
 

@@ -3,9 +3,18 @@
 # ============================================================
 from langgraph.graph import MessagesState
 from typing import List, Optional, TypedDict
+from langgraph.managed import RemainingSteps
 
 
 class AgentState(TypedDict):
+    # V2 字段只在新请求初始化；旧 Checkpoint 继续走原单目标分支。
+    execution_version: int
+    remaining_steps: RemainingSteps  # 框架管理，不能作为跨 resume 的预算账本
+    goals: List[dict]
+    active_goal_id: Optional[str]
+    plan_revision: int              # 参数/计划变更版本，与自动重规划次数分开
+    budget_snapshot: dict
+    budget_reason: str
     # === 输入 ===
     user_input: str                    # 用户原始输入
     user_id: str                       # 当前用户 ID

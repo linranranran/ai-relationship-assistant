@@ -113,6 +113,8 @@ class ClarificationPrompt(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    goals: list[dict] = Field(default_factory=list,description="安全的目标状态摘要，不包含工具原始参数")
+    budget: Optional[dict] = Field(default=None,description="请求级消耗快照，不含执行租约")
     request_id: str = Field(description="本次请求的幂等键，重试和查询必须复用")
     run_id: Optional[str] = Field(default=None, description="本次执行/恢复批次；与 request_id 含义不同")
     response: str = Field(description="Agent 的回复")
@@ -122,6 +124,8 @@ class ChatResponse(BaseModel):
         "QUEUED",
         "RUNNING",
         "COMPLETED",
+        "PARTIALLY_COMPLETED",
+        "BUDGET_EXCEEDED",
         "CONFIRMATION_REQUIRED",
         "CLARIFICATION_REQUIRED",
         "CANCELLED",

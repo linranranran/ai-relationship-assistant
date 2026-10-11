@@ -31,9 +31,33 @@ def finalize_memory(state: AgentState) -> dict:
     积压；工作者会在未达到最小批次时快速结束。
     """
     runtime = get_memory_runtime()
+    if state.get("execution_version") == 2:
+        state = {
+            **state,
+            "tool_calls": [
+                call
+                for goal in state.get("goals", [])
+                for call in goal.get("tool_calls", [])
+            ],
+            "tool_results": [
+                record
+                for goal in state.get("goals", [])
+                for record in goal.get("tool_results", [])
+            ],
+        }
     owner_id = state["user_id"]
     conversation_id = state.get("conversation_id", "default")
     request_id = state["request_id"]
+    question = state["user_input"]
+    if state.get("execution_version") == 2:
+        # State 保留原始提问供幂等恢复；对话证据还需包含本任务中的用户补充。
+        # 否则“张三，1990 年出生”来自澄清回答，却只引用了“帮我添加一个人”，
+        # 长期事实的 evidence_message_id 就无法追溯具体属性来源。
+        answers = [f"目标 {index + 1} 用户补充：{answer}"
+                   for index, goal in enumerate(state.get("goals", []))
+                   for answer in goal.get("clarifications", [])]
+        if answers:
+            question += "\n\n" + "\n".join(answers)
 
     user_message = MemoryMessage(
         message_id=_stable_message_id(owner_id, request_id, MemoryRole.USER),
@@ -41,9 +65,9 @@ def finalize_memory(state: AgentState) -> dict:
         conversation_id=conversation_id,
         request_id=request_id,
         role=MemoryRole.USER,
-        content=state["user_input"],
+        content=question,
         token_count=runtime.token_counter.count_messages(
-            [{"role": "user", "content": state["user_input"]}]
+            [{"role": "user", "content": question}]
         ),
     )
     assistant_message = MemoryMessage(
@@ -98,7 +122,7 @@ def finalize_memory(state: AgentState) -> dict:
     if not focus_candidates and resolve_reference(state)["status"] == "RESOLVED":
         focus = state.get("person_focus")
         focus_candidates = state.get("person_focus_candidates", [])
-    return {
+    update = {
         "recent_messages": recent,
         "memory_write_candidates": [asdict(candidate) for candidate in candidates],
         "person_focus": focus,
@@ -106,6 +130,11 @@ def finalize_memory(state: AgentState) -> dict:
         "person_focus_candidates_owner_id": owner_id,
         "person_focus_candidates_conversation_id": conversation_id,
     }
+    if state.get("execution_version") == 2:
+        from backend.db.agent_budget_store import BudgetStore
+
+        update["budget_snapshot"] = BudgetStore(owner_id, request_id).snapshot()
+    return update
 
 
 def _enqueue_maintenance_jobs(
@@ -138,9 +167,7 @@ def _enqueue_maintenance_jobs(
                 conversation_id=conversation_id,
                 request_id=request_id,
                 job_type=MemoryJobType.PERSIST_FACTS,
-                payload={
-                    "candidates": [asdict(candidate) for candidate in candidates]
-                },
+                payload={"candidates": [asdict(candidate) for candidate in candidates]},
             )
     except Exception:
         # 用户请求仍然完成；告警必须进入监控。摘要可由后续轮次追上，事实任务则可
@@ -153,7 +180,9 @@ def _enqueue_maintenance_jobs(
 
 
 def _stable_message_id(owner_id: str, request_id: str, role: MemoryRole) -> str:
-    return str(uuid5(NAMESPACE_URL, f"relationship-agent:{owner_id}:{request_id}:{role.value}"))
+    return str(
+        uuid5(NAMESPACE_URL, f"relationship-agent:{owner_id}:{request_id}:{role.value}")
+    )
 
 
 def _append_turn_idempotently(

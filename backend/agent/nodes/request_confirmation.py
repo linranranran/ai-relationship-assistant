@@ -58,6 +58,12 @@ def request_confirmation(state: AgentState) -> Command:
 
     # 使用 ``is True``，字符串 "true"、数字 1 都不能代表真实授权。
     if resume_value.get("confirmed") is not True:
+        if state.get("execution_version") == 2 and state.get("active_goal_id"):
+            from backend.agent.goal_policy import replace_goal
+            return Command(update={"goals":replace_goal(state,status="CANCELLED",failure_reason="用户拒绝该操作",
+                                                       tool_calls=state.get("tool_calls",[]),tool_results=state.get("tool_results",[])),
+                                   "needs_confirmation":False,"pending_confirmation":None,"user_confirmed":False},
+                           goto="select_next_goal")
         return Command(
             update={
                 "response": "已取消本次操作。",

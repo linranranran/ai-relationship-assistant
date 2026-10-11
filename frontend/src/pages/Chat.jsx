@@ -195,7 +195,7 @@ export default function Chat() {
       }
       // 历史批次的终止事件不能结束刚刚提交的恢复任务。
       if (event.run_id !== subscription.runId) return false
-      if (event.type === 'stage.started' || event.type.startsWith('tool.')) {
+      if (event.type === 'stage.started' || event.type.startsWith('tool.') || event.type.startsWith('goal.')) {
         setProgress((previous) => [...previous.slice(-19), {
           seq: event.seq, message: event.message, type: event.type,
         }])
