@@ -1,4 +1,9 @@
-"""按依赖顺序执行 Tool，并把执行事实交给观察节点。"""
+"""公共执行器：工具步骤的依赖、参数、确认、幂等和实际调用都在此落实。
+
+阅读 execute_tools 的七个阶段即可理解主线；辅助函数负责具体存储或协议细节。
+Plan 一次传多个步骤，Direct 每轮传一个步骤，都复用同一执行器。此处没有 LLM
+决策：它只记录执行事实，随后交给 observe_execution 判断下一步。
+"""
 
 import logging
 from copy import deepcopy
@@ -19,6 +24,7 @@ from backend.agent.confirmation import HIGH_RISK_TOOLS, build_confirmation_reque
 from backend.agent.execution_enums import ExecutionClaimAction, ToolStepStatus
 from backend.agent.execution_policy import ToolErrorCode, parse_tool_error_code
 from backend.agent.state import AgentState
+from backend.agent.strategies.contracts import is_request_direct
 from backend.agent.tool_dependencies import resolve_result_references
 from backend.agent.tool_execution_repository import (
     ExecutionClaim,
@@ -27,6 +33,7 @@ from backend.agent.tool_execution_repository import (
     mark_success,
 )
 from backend.tools.registry import TOOL_ARGUMENT_MODELS, execute_tool
+from backend.db.postgres_client import get_tool_execution
 
 
 logger = logging.getLogger(__name__)
@@ -156,6 +163,7 @@ def _record(
         "step_id": call["step_id"],
         "call_id": call["call_id"],
         "tool": call["tool"],
+        "args": call.get("args", {}),  # 保存实际参数，供逐步策略核对实体与业务效果。
         "status": status.value,
         "result": result,
         "error": error,
@@ -221,6 +229,30 @@ def _resolve_and_validate_args(
             raise ValueError("关系两端不能是同一人物")
     validated = TOOL_ARGUMENT_MODELS[call["tool"]].model_validate(concrete_input)
     concrete = validated.model_dump(exclude_none=True)
+    from backend.agent.strategies.contracts import is_request_direct
+    if is_request_direct(state):
+        from backend.agent.direct_runtime import validate_direct_call
+        validate_direct_call(state, {**call, "args": concrete})
+    if state.get("execution_version") == 2 and state.get("active_goal_id"):
+        # owner 隔离只能证明“有权限访问”，不能证明“用户要求操作此人物”。
+        # Plan 的 $ref 此刻已变成真实 ID；本批前置查询/写入也已形成可信回执。
+        # 先校验真实实体与用户指定字段，拒绝后绝不 claim 或产生业务副作用。
+        # 默认值用于运行参数；范围校验只看模型实际提交的字段（含显式清空）。
+        from backend.agent.goal_scope import validate_business_scope
+        from backend.agent.goal_policy import active_goal
+        from backend.agent.goal_completion import record_facts, trusted_bindings
+        bindings = trusted_bindings(state, record_facts(active_goal(state), state))
+        submitted_names = call.get("submitted_arg_names")
+        if submitted_names is None:
+            # 兼容此前检查点：新增人物的三个无害默认值不代表主动属性修改。
+            # Update 的可选属性默认是 None，显式 [] 必须保留并校验，绝不能忽略。
+            submitted_names = list(concrete_input)
+            if call["tool"] == "add_person":
+                for key, value in {"gender": "未知", "hobbies": [], "tags": []}.items():
+                    if concrete_input.get(key) == value:
+                        submitted_names.remove(key)
+        supplied = {key: value for key, value in concrete.items() if key in submitted_names}
+        validate_business_scope(state, [{"tool": call["tool"], "args": supplied}], bindings)
     if confirmed is True:
         concrete["confirmed"] = True
     return concrete
@@ -235,6 +267,10 @@ def _runtime_args(state: AgentState, call: dict, resolved_args: dict) -> dict:
     否则“甲是乙的朋友”也会被错误地写成本人与乙的关系。
     """
     runtime = dict(resolved_args)
+    # Direct 的新增/更新确认位只用于执行器授权，这些 Tool 函数并不接受 confirmed。
+    # 删除工具原本接受该标记，继续按现有接口传入。
+    if call["tool"] not in HIGH_RISK_TOOLS:
+        runtime.pop("confirmed", None)
     runtime["owner_id"] = state["user_id"]
     if call["tool"] in BUSINESS_IDEMPOTENT_TOOLS:
         runtime["idempotency_key"] = f"{state['user_id']}:{call['call_id']}"
@@ -395,7 +431,12 @@ def _confirmation_command(
     completed_mutations: list[dict],
 ) -> Command:
     """把已经解析出真实参数的高风险步骤交给确认节点暂停。"""
-    pending = build_confirmation_request([tool_calls[index]], state["user_id"])
+    from backend.agent.strategies.contracts import is_request_direct
+    if is_request_direct(state):
+        from backend.agent.direct_runtime import build_direct_confirmation
+        pending = build_direct_confirmation(state, tool_calls[index])
+    else:
+        pending = build_confirmation_request([tool_calls[index]], state["user_id"])
     pending["interaction_type"] = "CONFIRMATION"
     return Command(
         update={
@@ -413,6 +454,48 @@ def _confirmation_command(
     )
 
 
+def _incompatible_catalog_result(state: AgentState, error) -> Command:
+    """版本变化禁止新动作，但先只读核对原动作，不能丢掉已提交的写入。
+
+    不调用 claim（可能创建租约），不重新解析旧 args，也不启动任何业务写入。
+    PG 中的实际参数与成功回执优先；PG 未结算的写再查 Neo4j 原子回执。
+    仓储不可读时承认结果未知，不能向用户宣称没产生业务效果。
+    """
+    calls = deepcopy(state.get("tool_calls", []))
+    records = deepcopy(state.get("tool_results", []))
+    completed = {r["call_id"] for r in records if r.get("status") in {"SUCCESS", "RESOLVED"}}
+    uncertain, warnings = [], []
+    for call in calls:
+        if call["call_id"] in completed:
+            continue
+        try:
+            saved = get_tool_execution(call["call_id"], state["user_id"])
+        except Exception:
+            warnings.append("部分原操作的回执暂不可读，是否已提交未知，请核对业务数据。")
+            continue
+        if not saved or saved.get("tool_name") != call["tool"]:
+            continue
+        call["args"] = saved.get("arguments") or call.get("args", {})
+        if saved.get("status") == "success" and isinstance(saved.get("result"), dict):
+            records = [r for r in records if r["call_id"] != call["call_id"]]
+            records.append(_record(call, ToolStepStatus.SUCCESS, result=saved["result"]))
+        elif call["tool"] in BUSINESS_IDEMPOTENT_TOOLS:
+            uncertain.append(call)
+    if uncertain:
+        from backend.db.neo4j_operations import read_committed_operations
+        try:
+            committed = read_committed_operations(state["user_id"], uncertain)
+            for call in uncertain:
+                if call["call_id"] in committed:
+                    records = [r for r in records if r["call_id"] != call["call_id"]]
+                    records.append(_record(call, ToolStepStatus.SUCCESS, result=committed[call["call_id"]]))
+        except Exception:
+            warnings.append("业务回执核对失败，部分写入结果未知，请核对业务数据。")
+    return Command(update={"tool_calls": calls, "tool_results": records,
+                           "stop_reason": error.code, "execution_errors": [error.feedback, *warnings]},
+                   goto="direct_finish" if is_request_direct(state) else "finalize_goal")
+
+
 def execute_tools(state: AgentState) -> Command:
     """顺序执行带依赖的 Tool 计划。
 
@@ -428,6 +511,19 @@ def execute_tools(state: AgentState) -> Command:
     执行器只记录事实，不决定应该回复、重规划还是询问用户。这正是 Observe
     节点存在的原因。
     """
+    # 1. 核对版本和目录：恢复可能直接进入执行器，不经过策略入口。
+    # 因此部署后 Schema/策略不兼容时必须在这里再次关闭执行入口。
+    # 已完成回执留在状态中，不能用新 Schema 偷偷重解释旧动作。
+    if state.get("execution_version") == 2:
+        from backend.agent.strategies.catalog import require_current_catalog
+        from backend.agent.strategies.contracts import require_supported_strategy
+        from backend.agent.contracts import ModelBusinessValidationError
+        try:
+            require_current_catalog(state)
+            require_supported_strategy(state)
+        except ModelBusinessValidationError as exc:
+            return _incompatible_catalog_result(state, exc)
+    # 2. 读取本批次执行位置：局部更新最后进入 Command，避免原地改输入 state。
     tool_calls = deepcopy(state.get("tool_calls", []))
     records = list(state.get("tool_results", []))
     errors = list(state.get("execution_errors", []))
@@ -444,7 +540,8 @@ def execute_tools(state: AgentState) -> Command:
             return Command(update={"tool_calls": tool_calls, "tool_results": records,
                                    "execution_errors": errors, "completed_mutations": completed_mutations,
                                    "next_tool_index": index, "execution_decision": "CANCELLED",
-                                   "response": "已停止后续步骤；已经完成的操作仍然保留。"}, goto="__end__")
+                                   "response": "已停止后续步骤；已经完成的操作仍然保留。"},
+                           goto="direct_finish" if is_request_direct(state) else "__end__")
         call = tool_calls[index]
         step_id = call["step_id"]
 
@@ -454,6 +551,7 @@ def execute_tools(state: AgentState) -> Command:
             continue
         trace_event("tool.claim", step_id=step_id, call_id=call["call_id"], tool=call["tool"])
 
+        # 3. 校验依赖，解析 $ref / 本人标记，并验证具体人物及业务参数。
         missing_dependencies = [
             dependency
             for dependency in call.get("depends_on", [])
@@ -505,7 +603,9 @@ def execute_tools(state: AgentState) -> Command:
                 continue
 
         try:
-            resolved_args = _resolve_and_validate_args(state, call, results_by_step)
+            resolved_args = _resolve_and_validate_args(
+                {**state, "tool_calls": tool_calls, "tool_results": records}, call, results_by_step
+            )
         except Exception as exc:
             _append_problem(
                 records,
@@ -521,6 +621,7 @@ def execute_tools(state: AgentState) -> Command:
         call["args"] = resolved_args
         tool_calls[index] = call
 
+        # 4. 复用此前已完成的同内容写入；新 call_id 不应造成第二次物理写入。
         # 同一请求在澄清后可能换 plan_version/call_id。精确匹配已经完成的写
         # 操作，复用结果；不是让模型自行记住“不要重复新增”。确认位是权限参数，
         # 不参与业务操作内容比较。新的不同操作仍按正常流程确认和执行。
@@ -530,7 +631,8 @@ def execute_tools(state: AgentState) -> Command:
                          and item.get("args") == business_args
                          and item.get("reusable", True)
                          and item.get("goal_id") == state.get("active_goal_id")
-                         and item.get("plan_version", -1) != state.get("plan_revision",state.get("replan_count", 0))), None)
+                         and (state.get("strategy_mode", "plan") != "plan"
+                              or item.get("plan_version", -1) != state.get("plan_revision",state.get("replan_count", 0)))), None)
         if call["tool"] in BUSINESS_IDEMPOTENT_TOOLS and previous is not None:
             result = previous["result"]
             records.append(_record(call, ToolStepStatus.RESOLVED, result=result))
@@ -541,7 +643,15 @@ def execute_tools(state: AgentState) -> Command:
                           step_id=step_id, message="复用此前已完成的操作结果")
             continue
 
-        if call["tool"] in HIGH_RISK_TOOLS and resolved_args.get("confirmed") is not True:
+        # 5. 授权：明确新增按当前用户原文检查；修改/删除及无法证明范围的新增
+        # 仍确认。这里使用解析后的真实参数，不能只按工具名一概放开新增。
+        requires_confirmation = _requires_confirmation(state, call)
+        if is_request_direct(state) and call["tool"] in BUSINESS_IDEMPOTENT_TOOLS:
+            trace_event("write.authorization", tool=call["tool"], call_id=call["call_id"],
+                        policy="explicit_create_only", decision=(
+                            "USER_CONFIRMED" if resolved_args.get("confirmed") is True else
+                            "CONFIRM_REQUIRED" if requires_confirmation else "EXPLICIT_CREATE"))
+        if requires_confirmation and resolved_args.get("confirmed") is not True:
             try:
                 return _confirmation_command(state, tool_calls, records, errors, index, completed_mutations)
             except Exception as exc:
@@ -556,9 +666,12 @@ def execute_tools(state: AgentState) -> Command:
 
         # 仓储/租约错误属于系统故障，应由 checkpoint 保存执行位置后交给
         # 原请求重试，不能包装成业务信息不足后让模型或用户重新规划。
+        # 6. 认领执行权后再调用工具。没有拿到执行权，就不能自己重新执行。
         claim = _claim(state, call, resolved_args)
 
         if claim.action == ExecutionClaimAction.WAIT:
+            # 注意这是「认领结果枚举」中的 WAIT：已有成功结果，可直接复用。
+            # 它不同于观察层 execution_decision=WAIT（仍在执行，结束本轮待重试）。
             trace_event("tool.cached", tool=call["tool"], call_id=call["call_id"], step_id=step_id)
             emit_progress("tool.reused", tool=call["tool"], call_id=call["call_id"],
                           step_id=step_id, message="复用已保存的工具结果")
@@ -626,6 +739,7 @@ def execute_tools(state: AgentState) -> Command:
         else:
             _save_failure(state, call, claim, result, latency_ms, records, errors)
 
+    # 7. 保存本批次事实，统一进入观察；工具结果不直接等于整次请求的成功。
     # 这里不生成面向用户的回复。Observe 会读取结构化结果，做出稳定、可审计
     # 的 COMPLETE / REPLAN / ASK_USER / WAIT 决策。
     return Command(
@@ -640,3 +754,13 @@ def execute_tools(state: AgentState) -> Command:
         },
         goto="observe_execution",
     )
+
+
+def _requires_confirmation(state, call) -> bool:
+    """Direct 按写入范围判断；Plan / Discovery 保留原有高风险工具确认策略。"""
+    if call["tool"] in HIGH_RISK_TOOLS:
+        return True  # 全局高风险规则优先，新模式的免确认不能覆盖它。
+    if is_request_direct(state):
+        from backend.agent.direct_write_policy import requires_direct_confirmation
+        return requires_direct_confirmation(state, call)
+    return False

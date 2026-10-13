@@ -31,7 +31,11 @@ def finalize_memory(state: AgentState) -> dict:
     积压；工作者会在未达到最小批次时快速结束。
     """
     runtime = get_memory_runtime()
-    if state.get("execution_version") == 2:
+    from backend.agent.strategies.contracts import is_request_direct
+    if is_request_direct(state):
+        from backend.agent.direct_runtime import direct_calls, direct_records
+        state = {**state, "tool_calls": direct_calls(state), "tool_results": direct_records(state)}
+    elif state.get("execution_version") == 2:
         state = {
             **state,
             "tool_calls": [
@@ -49,7 +53,11 @@ def finalize_memory(state: AgentState) -> dict:
     conversation_id = state.get("conversation_id", "default")
     request_id = state["request_id"]
     question = state["user_input"]
-    if state.get("execution_version") == 2:
+    if is_request_direct(state):
+        answers = [f"用户补充：{answer}" for answer in state.get("direct_clarifications", [])]
+        if answers:
+            question += "\n\n" + "\n".join(answers)
+    elif state.get("execution_version") == 2:
         # State 保留原始提问供幂等恢复；对话证据还需包含本任务中的用户补充。
         # 否则“张三，1990 年出生”来自澄清回答，却只引用了“帮我添加一个人”，
         # 长期事实的 evidence_message_id 就无法追溯具体属性来源。

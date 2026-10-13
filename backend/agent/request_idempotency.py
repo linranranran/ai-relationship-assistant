@@ -65,6 +65,9 @@ def claim_agent_request(
     thread_id: str,
     message: str,
     stale_after_seconds: int = AGENT_REQUEST_STALE_SECONDS,
+    strategy_mode: str = "plan",
+    strategy_version: str = "1",
+    catalog_schema_hash: str | None = None,
 ) -> AgentRequestClaim:
     """原子地决定当前进程是否可以执行这次 Agent 请求。"""
     message_hash = hash_request_message(message)
@@ -76,6 +79,9 @@ def claim_agent_request(
         thread_id=thread_id,
         message_hash=message_hash,
         execution_token=execution_token,
+        strategy_mode=strategy_mode,
+        strategy_version=strategy_version,
+        catalog_schema_hash=catalog_schema_hash,
     ):
         return AgentRequestClaim(
             AgentRequestAction.EXECUTE,

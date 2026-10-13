@@ -1,0 +1,922 @@
+{
+  "verified_scenarios": 48,
+  "provider": "offline scripted SDK",
+  "business_storage": "in-memory receipts",
+  "checkpoint": "InMemorySaver",
+  "results": [
+    {
+      "scenario": "hobbies",
+      "strategy": "plan",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 0,
+      "budget": {
+        "tool_attempts": 2,
+        "charged_tokens": 0
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 11
+    },
+    {
+      "scenario": "hobbies",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 16
+    },
+    {
+      "scenario": "hobbies",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 5,
+      "budget": {
+        "model_calls": 5,
+        "charged_tokens": 1000,
+        "discovery_calls": 3,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 28
+    },
+    {
+      "scenario": "hobbies",
+      "strategy": "plan",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 0,
+      "budget": {
+        "tool_attempts": 2,
+        "charged_tokens": 0
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 11
+    },
+    {
+      "scenario": "hobbies",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 16
+    },
+    {
+      "scenario": "hobbies",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 5,
+      "budget": {
+        "model_calls": 5,
+        "charged_tokens": 1000,
+        "discovery_calls": 3,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 28
+    },
+    {
+      "scenario": "hobbies",
+      "strategy": "plan",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 0,
+      "budget": {
+        "tool_attempts": 2,
+        "charged_tokens": 0
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 11
+    },
+    {
+      "scenario": "hobbies",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 16
+    },
+    {
+      "scenario": "hobbies",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 5,
+      "budget": {
+        "model_calls": 5,
+        "charged_tokens": 1000,
+        "discovery_calls": 3,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 28
+    },
+    {
+      "scenario": "create_attributes",
+      "strategy": "plan",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person"
+      ],
+      "sdk_calls": 0,
+      "budget": {
+        "tool_attempts": 2,
+        "charged_tokens": 0
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 12
+    },
+    {
+      "scenario": "create_attributes",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 17
+    },
+    {
+      "scenario": "create_attributes",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 17
+    },
+    {
+      "scenario": "confirmed_delete",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "delete_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "confirmed_delete",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "delete_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "candidate_resume",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2,
+        "clarifications": 1
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "candidate_resume",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2,
+        "clarifications": 1
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "wait_same_call",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "wait_same_call",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "crash_same_receipt",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person",
+        "add_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 3
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "crash_same_receipt",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person",
+        "add_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 3
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "repeated_read_stop",
+      "strategy": "direct",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person",
+        "find_person",
+        "find_person",
+        "find_person"
+      ],
+      "sdk_calls": 4,
+      "budget": {
+        "model_calls": 4,
+        "charged_tokens": 800,
+        "tool_attempts": 4
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 24
+    },
+    {
+      "scenario": "repeated_read_stop",
+      "strategy": "discovery",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person",
+        "find_person",
+        "find_person",
+        "find_person"
+      ],
+      "sdk_calls": 4,
+      "budget": {
+        "model_calls": 4,
+        "charged_tokens": 800,
+        "tool_attempts": 4
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 24
+    },
+    {
+      "scenario": "early_finish_stop",
+      "strategy": "direct",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 12
+    },
+    {
+      "scenario": "early_finish_stop",
+      "strategy": "discovery",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 12
+    },
+    {
+      "scenario": "unknown_id_repair",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 3,
+      "budget": {
+        "model_calls": 3,
+        "charged_tokens": 600,
+        "replans": 1,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 18
+    },
+    {
+      "scenario": "unknown_id_repair",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 3,
+      "budget": {
+        "model_calls": 3,
+        "charged_tokens": 600,
+        "replans": 1,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 18
+    },
+    {
+      "scenario": "dependent_multi_goal",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED",
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person",
+        "add_relation"
+      ],
+      "sdk_calls": 3,
+      "budget": {
+        "model_calls": 3,
+        "charged_tokens": 600,
+        "tool_attempts": 3
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 25
+    },
+    {
+      "scenario": "dependent_multi_goal",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED",
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person",
+        "add_relation"
+      ],
+      "sdk_calls": 3,
+      "budget": {
+        "model_calls": 3,
+        "charged_tokens": 600,
+        "tool_attempts": 3
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 25
+    },
+    {
+      "scenario": "schema_change_recovers_committed_receipt",
+      "strategy": "direct",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "schema_change_recovers_committed_receipt",
+      "strategy": "discovery",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "partial_field_progress",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "update_person",
+        "update_person",
+        "update_person",
+        "update_person"
+      ],
+      "sdk_calls": 5,
+      "budget": {
+        "model_calls": 5,
+        "charged_tokens": 1000,
+        "tool_attempts": 5
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 29
+    },
+    {
+      "scenario": "explicit_clear",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "update_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 17
+    },
+    {
+      "scenario": "reject_unrequested_clear",
+      "strategy": "direct",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person"
+      ],
+      "sdk_calls": 3,
+      "budget": {
+        "model_calls": 3,
+        "charged_tokens": 600,
+        "tool_attempts": 1,
+        "replans": 1
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 17
+    },
+    {
+      "scenario": "reject_forged_path",
+      "strategy": "direct",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person"
+      ],
+      "sdk_calls": 3,
+      "budget": {
+        "model_calls": 3,
+        "charged_tokens": 600,
+        "tool_attempts": 1,
+        "replans": 1
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 16
+    },
+    {
+      "scenario": "partial_field_progress",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "update_person",
+        "update_person",
+        "update_person",
+        "update_person"
+      ],
+      "sdk_calls": 5,
+      "budget": {
+        "model_calls": 5,
+        "charged_tokens": 1000,
+        "tool_attempts": 5
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 29
+    },
+    {
+      "scenario": "explicit_clear",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "update_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 17
+    },
+    {
+      "scenario": "reject_unrequested_clear",
+      "strategy": "discovery",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person"
+      ],
+      "sdk_calls": 3,
+      "budget": {
+        "model_calls": 3,
+        "charged_tokens": 600,
+        "tool_attempts": 1,
+        "replans": 1
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 17
+    },
+    {
+      "scenario": "reject_forged_path",
+      "strategy": "discovery",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person"
+      ],
+      "sdk_calls": 3,
+      "budget": {
+        "model_calls": 3,
+        "charged_tokens": 600,
+        "tool_attempts": 1,
+        "replans": 1
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 16
+    },
+    {
+      "scenario": "repeat_describe_stop",
+      "strategy": "discovery",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [],
+      "sdk_calls": 4,
+      "budget": {
+        "model_calls": 4,
+        "charged_tokens": 800,
+        "discovery_calls": 4
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 24
+    },
+    {
+      "scenario": "discovery_budget_stop",
+      "strategy": "discovery",
+      "goals": [
+        "RUNNING"
+      ],
+      "business_tools": [],
+      "sdk_calls": 1,
+      "budget": {
+        "discovery_calls": 8,
+        "model_calls": 1,
+        "charged_tokens": 200
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 8
+    },
+    {
+      "scenario": "confirmation_schema_change",
+      "strategy": "direct",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 1
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "confirmation_schema_change",
+      "strategy": "discovery",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 1
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "plan_reject_wrong_entity_or_extra_attribute",
+      "strategy": "plan",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person",
+        "find_person"
+      ],
+      "sdk_calls": 0,
+      "budget": {
+        "tool_attempts": 2,
+        "charged_tokens": 0,
+        "replans": 1
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 15
+    },
+    {
+      "scenario": "plan_reject_wrong_entity_or_extra_attribute",
+      "strategy": "plan",
+      "goals": [
+        "FAILED"
+      ],
+      "business_tools": [
+        "find_person",
+        "find_person"
+      ],
+      "sdk_calls": 0,
+      "budget": {
+        "tool_attempts": 2,
+        "charged_tokens": 0,
+        "replans": 1
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 15
+    },
+    {
+      "scenario": "plan_explicit_clear",
+      "strategy": "plan",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "update_person"
+      ],
+      "sdk_calls": 0,
+      "budget": {
+        "tool_attempts": 2,
+        "charged_tokens": 0
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": 12
+    },
+    {
+      "scenario": "create_wait_preserves_submitted_fields",
+      "strategy": "plan",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "find_person",
+        "add_person"
+      ],
+      "sdk_calls": 0,
+      "budget": {
+        "tool_attempts": 3,
+        "charged_tokens": 0
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "create_wait_preserves_submitted_fields",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    },
+    {
+      "scenario": "create_wait_preserves_submitted_fields",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "business_tools": [
+        "find_person",
+        "add_person"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 400,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "last_super_step": null
+    }
+  ]
+}

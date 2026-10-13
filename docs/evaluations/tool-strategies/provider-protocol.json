@@ -1,0 +1,29 @@
+{
+  "synthetic_protocol_only": true,
+  "business_tools_executed": false,
+  "strict": false,
+  "checks": [
+    {
+      "mode": "direct",
+      "model": "qwen-max",
+      "accepted_request": true,
+      "finish_reason": "tool_calls",
+      "tool_names": [
+        "find_person"
+      ],
+      "valid_json": true,
+      "usage_tokens": 321
+    },
+    {
+      "mode": "discovery",
+      "model": "qwen-max",
+      "accepted_request": true,
+      "finish_reason": "tool_calls",
+      "tool_names": [
+        "tool_call"
+      ],
+      "valid_json": true,
+      "usage_tokens": 438
+    }
+  ]
+}

@@ -27,7 +27,9 @@ export default function ChatMessage({ message: msg, busy, actions }) {
           <div className="chat-message-text">{msg.content}</div>
           {(msg.retry || msg.statusCheck) && <div className="chat-message-actions">
             {msg.retry && <Button size="small" variant="outline" disabled={busy}
-              onClick={() => actions.retry(msg.retry)}>继续原任务</Button>}
+              onClick={() => actions.retry(msg.retry)}>
+              {msg.retry.retryable === false ? '修复后继续原任务' : '继续原任务'}
+            </Button>}
             <Button size="small" variant="text" disabled={busy}
               onClick={() => actions.check(msg.retry || msg.statusCheck)}>查询当前状态</Button>
             <Button size="small" variant="text" disabled={busy}

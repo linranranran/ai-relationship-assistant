@@ -99,6 +99,18 @@ def build_goals(batch, state, *, require_business_fields=False):
 
 
 def validate_goal_business_fields(draft, drafts):
+    if draft.intent in {"QUERY_PERSON", "QUERY_KINSHIP", "SEMANTIC_SEARCH", "LIST_RELATIONS"} and draft.query_spec is None:
+        raise ModelBusinessValidationError("QUERY_SPEC_MISSING", "查询目标必须填写 query_spec，明确目标姓名、查询类别及所需属性。")
+    if draft.query_spec:
+        expected = {"QUERY_PERSON": {"person_detail", "relation_path"},
+                    "QUERY_KINSHIP": {"kinship_title"}, "SEMANTIC_SEARCH": {"semantic_matches"},
+                    "LIST_RELATIONS": {"relation_list"}}
+        if draft.query_spec.kind not in expected.get(draft.intent, set()):
+            raise ModelBusinessValidationError("QUERY_SCOPE_INVALID", "query_spec.kind 与当前查询意图不匹配。")
+        if draft.query_spec.kind != "person_detail" and draft.query_spec.requested_fields:
+            raise ModelBusinessValidationError("QUERY_FIELDS_INVALID", "只有人物详情查询可以指定人物属性。")
+    if draft.intent == "DELETE_PERSON" and (draft.person is None or not draft.person.name):
+        raise ModelBusinessValidationError("GOAL_PERSON_MISSING", "删除人物必须保留明确的目标姓名，代词须根据可信上下文解析。")
     if draft.intent in {"ADD_PERSON", "UPDATE_PERSON"}:
         if draft.person is None or (
             draft.intent == "ADD_PERSON" and not draft.person.name
@@ -138,7 +150,7 @@ def validate_goal_business_fields(draft, drafts):
                         "请检查原文：创建时提供的职业、出生年份等放入同一个 ADD_PERSON；"
                         "独立修改指令才保留 UPDATE_PERSON。不要仅凭同名合并不同人物。",
                     )
-    if draft.intent in {"ADD_RELATION", "UPDATE_RELATION"} and draft.relation is None:
+    if draft.intent in {"ADD_RELATION", "UPDATE_RELATION", "DELETE_RELATION"} and draft.relation is None:
         raise ModelBusinessValidationError(
             "GOAL_RELATION_MISSING", "关系目标必须在 relation 中保留双方和关系类型。"
         )
@@ -164,7 +176,7 @@ def goal_input(state):
         f"当前目标：{goal['description']}\n原文：{goal['source_quote']}\n"
         + "结构化目标字段："
         + json.dumps(
-            {key: goal.get(key) for key in ("person", "relation")},
+            {key: goal.get(key) for key in ("person", "relation", "query_spec")},
             ensure_ascii=False,
         )
         + "\n"
@@ -229,42 +241,12 @@ def validate_plan_scope(state, tool_calls):
                 )
 
 
-def completion_evidence(goal, records, extracted_info=None):
-    """只承认成功工具回执。部分工具成功不能推出整个目标成功。"""
-    successes = [
-        record
-        for record in records
-        if record.get("status") in {"SUCCESS", "RESOLVED"}
-        and isinstance(record.get("result"), dict)
-        and record["result"].get("success")
-    ]
-    required = REQUIRED_TOOLS.get(goal["intent"], set())
-    evidence = [record for record in successes if record["tool"] in required]
-    if not required:
-        return goal["intent"] == "CHITCHAT", []
-    ok = bool(evidence) and not any(
-        record.get("status") in {"FAILED", "SKIPPED"} for record in records
-    )
-    if ok and goal["intent"] in {"ADD_PERSON", "UPDATE_PERSON"} and extracted_info:
-        expected = extracted_info.get("primary_person", {})
-        # 只取得 ID 不能证明明确的属性已保存；现有人物复用分支也必须核验这些字段。
-        attrs = {
-            key: value
-            for key, value in expected.items()
-            if value is not None
-            and value != []
-            and not (key == "gender" and value == "未知")
-        }
-        if attrs:
-            ok = any(
-                isinstance(record["result"].get("data"), dict)
-                and all(
-                    record["result"]["data"].get(key) == value
-                    for key, value in attrs.items()
-                )
-                for record in evidence
-            )
-    return ok, evidence
+def completion_evidence(goal, records, extracted_info=None, *, state=None):
+    """兼容原调用接口；完成条件统一到纯代码合同，不看模型的自评。"""
+    from backend.agent.goal_completion import build_completion_spec, evaluate_goal, trusted_bindings
+    evaluation = evaluate_goal(build_completion_spec(goal, extracted_info), records,
+                               trusted_bindings(state or {}, records))
+    return evaluation.status == "SATISFIED", [r for r in records if r["call_id"] in evaluation.evidence_call_ids]
 
 
 def replace_goal(state, **changes):
@@ -276,7 +258,7 @@ def replace_goal(state, **changes):
 
 
 def archive_current_plan(state):
-    """换计划前归档成功事实；失败步骤不累加到新计划，否则修复后仍会被判失败。"""
+    """换计划前归档所有事实；新批次单独观察，历史失败不会永久污染当前结果。"""
     goal = active_goal(state)
     if goal is None:
         return state.get("goals", [])
@@ -289,7 +271,7 @@ def archive_current_plan(state):
         {
             record["call_id"]: record
             for record in state.get("tool_results", [])
-            if record.get("status") in {"SUCCESS", "RESOLVED"}
+        # 失败也是事实，保留用于审计；evaluate_goal 判断是否已被后续合法回执修复。
         }
     )
     return replace_goal(

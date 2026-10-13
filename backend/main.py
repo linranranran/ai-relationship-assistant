@@ -68,6 +68,13 @@ async def lifespan(_app: FastAPI):
         ensure_stream_schema()
         ensure_history_schema()
         ensure_budget_schema()
+        from backend.db.agent_request_store import ensure_strategy_schema
+        from backend.agent.strategies.factory import validate_strategy
+        from backend.config import AGENT_TOOL_STRATEGY, AGENT_MAX_NO_PROGRESS_ROUNDS
+        ensure_strategy_schema()
+        validate_strategy(AGENT_TOOL_STRATEGY)
+        if AGENT_MAX_NO_PROGRESS_ROUNDS < 1:
+            raise ValueError("无进展轮数必须为正数")
         from backend.agent.budget import BudgetLimits
         BudgetLimits()
         from backend.config import AGENT_TASK_RECURSION_LIMIT, LLM_STRUCTURED_METHOD

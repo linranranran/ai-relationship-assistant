@@ -83,7 +83,9 @@ def sanitize_model_tool_calls(
                     raise ValueError(f"缺少必填参数：{', '.join(missing)}")
             else:
                 validated_args = argument_model.model_validate(safe_args)
-                safe_args = validated_args.model_dump(exclude_none=True)
+                # 保留模型实际提交的字段。Schema 默认值用于执行时补齐，不能把
+                # 默认 hobbies=[] 误当成用户要求清空爱好，也不能掩盖主动越界字段。
+                safe_args = validated_args.model_dump(exclude_none=True, exclude_unset=True)
         except ToolPlanValidationError:
             raise  # $ref 的格式/依赖错误保留原有安全反馈。
         except (ValidationError, ValueError) as e:
@@ -117,6 +119,9 @@ def sanitize_model_tool_calls(
                 "call_id": call_id,
                 "tool": tool_name,
                 "args": safe_args,
+                # 与 args 分开保存：执行器会解析引用、补齐默认值并保存运行参数。
+                # WAIT/确认恢复仍须知道哪些字段是模型主动提交的，不能重新推测。
+                "submitted_arg_names": list(safe_args),
                 "depends_on": dependencies,
             }
         )
@@ -170,6 +175,8 @@ def build_confirmation_request(tool_calls: list[dict] ,owner_id:str) -> dict:
 def authorize_high_risk_calls(
     tool_calls: list[dict],
     only_index: int | None = None,
+    *,
+    confirmation_tools: frozenset[str] = HIGH_RISK_TOOLS,
 ) -> list[dict]:
     """在用户明确确认后，由服务端注入授权标记。
 
@@ -180,6 +187,6 @@ def authorize_high_risk_calls(
     for index, call in enumerate(authorized):
         if only_index is not None and index != only_index:
             continue
-        if call.get("tool") in HIGH_RISK_TOOLS:
+        if call.get("tool") in confirmation_tools:
             call.setdefault("args", {})["confirmed"] = True
     return authorized

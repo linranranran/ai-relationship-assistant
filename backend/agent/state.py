@@ -7,7 +7,8 @@ from langgraph.managed import RemainingSteps
 
 
 class AgentState(TypedDict):
-    # V2 字段只在新请求初始化；旧 Checkpoint 继续走原单目标分支。
+    # execution_version 是图状态结构版本，与 strategy_version（模式协议）不同。
+    # 旧 Plan 检查点仍有单目标兼容；已移除的 Direct 版本在恢复入口拒绝执行。
     execution_version: int
     remaining_steps: RemainingSteps  # 框架管理，不能作为跨 resume 的预算账本
     goals: List[dict]
@@ -20,6 +21,29 @@ class AgentState(TypedDict):
     user_id: str                       # 当前用户 ID
     self_person_id: str                # 当前用户私有关系图中的“本人”节点 ID
     request_id: str                    # 本次请求链路 ID
+    strategy_mode: str                 # 请求固定的 plan/direct/discovery，不随配置热切换。
+    strategy_version: str
+    catalog_schema_hash: str
+    decision_seq: int                  # 已接受动作序号；稳定 call_id 与缓存键的一部分。
+    pending_decision: dict             # 决策节点持久化后，执行节点才允许产生副作用。
+    strategy_messages: List[dict]      # 完整 assistant tool_calls / tool 消息组。
+    goal_evaluation: dict
+    progress_snapshot: dict
+    no_progress_rounds: int
+    finish_repair_count: int
+    protocol_repair_count: int
+    clarification_question: str
+    stop_reason: str
+    loaded_tool_schemas: List[str]
+    discovery_result: Optional[dict]
+    # Direct 的请求账本；没有 goal，不能借用最后一轮工具数组保存整次执行事实。
+    direct_tool_calls: List[dict]
+    direct_tool_results: List[dict]
+    direct_clarifications: List[str]
+    direct_final_message: dict         # 模型的结束草稿，不能当作业务成功证据。
+    direct_rejected_mutations: List[str]  # 用户拒绝的操作内容指纹，禁止换 call_id 重提。
+    completion_basis: str              # MODEL_STOP_WITH_TOOL_RECEIPTS / SYSTEM_STOP
+    requirements_verified: Optional[bool]  # Direct 固定 false；Plan / Discovery 为 None。
     thread_id: str                     # LangGraph 检查点 ID，只能由服务端生成
     conversation_id: str               # 服务端校验的业务会话 ID；当前兼容值为 default
     user_name: str                     # 当前用户姓名

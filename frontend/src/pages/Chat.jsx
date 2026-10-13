@@ -51,7 +51,7 @@ const loadPendingMessages = (storageKey) => {
             key: `${pending.requestId}:pending`,
             statusCheck: pending,
           })
-      : makeMessage('assistant', '上次任务尚未完成，可以查询状态或继续执行。', pending.requestId, {
+      : makeMessage('assistant', pending.response || '上次任务尚未完成，可以查询状态或继续执行。', pending.requestId, {
           key: `${pending.requestId}:pending`,
           retry: pending,
         }),
@@ -135,7 +135,9 @@ export default function Chat() {
     if (data.status === 'FAILED') {
       // failed 是可恢复状态；查询失败结果后仍保留原 request_id 和原提问。
       // 后端会从检查点继续，并读取已持久化的人工答案，不能创建一个新任务。
-      const retry = { text: pending.text, requestId: pending.requestId }
+      // retryable=false 表示先处理账户/配置，保留原请求以便修复后恢复，不能丢掉任务。
+      const retry = { text: pending.text, requestId: pending.requestId,
+        retryable: data.retryable, errorCode: data.error_code, response: data.response }
       localStorage.setItem(pendingStorageKey, JSON.stringify(retry))
       setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
         makeMessage('assistant', data.response, pending.requestId, {

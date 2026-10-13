@@ -1,4 +1,9 @@
-"""收集继续执行所缺少的信息，并从同一 LangGraph 检查点恢复。"""
+"""澄清入口：收集业务信息，不批准写入，也不让用户修复内部工具参数。
+
+先看 ask_clarification 的候选/指代/自由文本分流，再看对应恢复函数。
+_resume_after_free_text 会区分 Direct 请求、当前 goal 和旧单目标检查点。
+候选选择使用中断时的真实候选回填原步骤，不重新调用模型猜人物 ID。
+"""
 
 from typing import Any
 
@@ -90,7 +95,7 @@ def _build_clarification_payload(state: AgentState) -> tuple[dict, dict | None]:
             )
 
     errors = state.get("execution_errors", [])
-    reason = errors[-1] if errors else "当前信息不足，无法确定下一步操作"
+    reason = state.get("clarification_question") or (errors[-1] if errors else "当前信息不足，无法确定下一步操作")
     return (
         {
             "interaction_type": "CLARIFICATION",
@@ -183,10 +188,11 @@ def _resume_after_candidate(
 
 
 def _resume_after_free_text(state: AgentState, resume_value: Any) -> Command:
-    """把用户补充内容加入原问题，重新进行意图识别和规划。
+    """校验补充文本，然后按请求的既定编排方式恢复。
 
-    ``replan_count`` 同时作为 plan_version，递增后会生成新 call_id，避免新计划
-    错误复用旧计划中参数不同的 Tool 调用记录。
+    Direct：补充加入请求账本，重建上下文，继续整次请求的决策。
+    目标模式：只补当前 goal，不重新拆整句，不丢其他目标的结果。
+    旧单目标：兼容原问题追加补充文本的行为。
     """
     answer = resume_value.get("answer") if isinstance(resume_value, dict) else None
     if not isinstance(answer, str) or not answer.strip():
@@ -201,18 +207,86 @@ def _resume_after_free_text(state: AgentState, resume_value: Any) -> Command:
             goto=END,
         )
 
+    from backend.agent.strategies.contracts import is_request_direct
+    if is_request_direct(state):
+        return _resume_direct_text(state, normalized)
     if state.get("execution_version") == 2 and state.get("active_goal_id"):
-        from backend.agent.goal_policy import active_goal, replace_goal, archive_current_plan
-        goal = active_goal(state)
-        revision = state.get("plan_revision",0)+1
-        archived = {**state,"goals":archive_current_plan(state)}
-        goals = replace_goal(archived,clarifications=[*goal.get("clarifications",[]),normalized],plan_revision=revision)
-        # 澄清不重新拆解整条请求，不清空请求级预算和其他目标结果。
-        target = "refine_goal" if goal["intent"] == "UNCLEAR" else (
-            "extract_info" if goal["intent"] in {"ADD_PERSON","UPDATE_PERSON","ADD_RELATION","UPDATE_RELATION"} else "plan_tasks")
-        return Command(update={"goals":goals,"plan_revision":revision,"tool_calls":[],"tool_results":[],
-                               "execution_errors":[],"next_tool_index":0,"pending_confirmation":None,
-                               "pending_reference":None,"response":""},goto=target)
+        return _resume_goal_text(state, normalized)
+    return _resume_legacy_text(state, normalized)
+
+
+def _clarification_messages(state, answer, decision_id):
+    """把回答配回原模型动作；恢复同一轮时替换协议组，避免重复历史。"""
+    from backend.agent.strategies.tool_protocol import append_tool_result_messages
+    pending = state.get("pending_decision") or {}
+    return append_tool_result_messages(
+        state.get("strategy_messages", []), pending.get("message", {}),
+        {"user_answer": answer}, decision_id=decision_id,
+    )
+
+
+def _resume_direct_text(state, answer) -> Command:
+    """先保存当前轮事实，再清空工作区；原 user_input 和已完成写入不变。"""
+    from backend.agent.direct_runtime import direct_calls, direct_records
+    messages = _clarification_messages(
+        state, answer, f"request:{state['request_id']}:{state.get('decision_seq', 0)}",
+    )
+    return Command(
+        update={
+            "direct_tool_calls": direct_calls(state),
+            "direct_tool_results": direct_records(state),
+            "direct_clarifications": [*state.get("direct_clarifications", []), answer],
+            "strategy_messages": messages,
+            "pending_decision": {}, "tool_calls": [], "tool_results": [],
+            "pending_reference": None, "pending_confirmation": None,
+            "clarification_question": "", "execution_errors": [],
+            "next_tool_index": 0, "no_progress_rounds": 0, "response": "",
+        },
+        # 新补充影响上下文相关性和 Token 预算，不能直接复用中断前的提示词。
+        goto="prepare_context",
+    )
+
+
+def _goal_resume_target(state, goal) -> str:
+    """先按业务类型选入口，再处理 Discovery 的逐步策略分流。"""
+    if goal["intent"] == "UNCLEAR":
+        return "refine_goal"
+    if goal["intent"] in {"ADD_PERSON", "UPDATE_PERSON", "ADD_RELATION", "UPDATE_RELATION"}:
+        return "extract_info"
+    if state.get("strategy_mode", "plan") == "plan":
+        return "plan_tasks"
+
+    query = goal.get("query_spec") or {}
+    needs_target = query.get("kind") in {"person_detail", "relation_path", "kinship_title"}
+    return "refine_goal" if needs_target and not query.get("target_name") else "strategy_dispatch"
+
+
+def _resume_goal_text(state, answer) -> Command:
+    """仅修订当前目标，先归档旧计划；预算和其他目标始终保留。"""
+    from backend.agent.goal_policy import active_goal, replace_goal, archive_current_plan
+    goal = active_goal(state)
+    revision = state.get("plan_revision", 0) + 1
+    archived = {**state, "goals": archive_current_plan(state)}
+    goals = replace_goal(
+        archived, clarifications=[*goal.get("clarifications", []), answer], plan_revision=revision,
+    )
+    messages = _clarification_messages(
+        state, answer, f"{state.get('active_goal_id')}:{state.get('decision_seq', 0)}",
+    )
+    return Command(
+        update={
+            "goals": goals, "plan_revision": revision,
+            "tool_calls": [], "tool_results": [], "execution_errors": [],
+            "next_tool_index": 0, "pending_confirmation": None, "pending_reference": None,
+            "response": "", "strategy_messages": messages, "pending_decision": {},
+            "clarification_question": "", "no_progress_rounds": 0,
+        },
+        goto=_goal_resume_target(state, goal),
+    )
+
+
+def _resume_legacy_text(state, normalized) -> Command:
+    """旧检查点兼容分支：追加问题并重建上下文，不迁移到新策略。"""
     return Command(
         update={
             "user_input": f"{state['user_input']}\n用户补充：{normalized}",
@@ -281,31 +355,24 @@ def ask_clarification(state: AgentState) -> Command:
     完全不同：
 
     * clarification 只补全业务信息，永远不能注入 ``confirmed=True``；
-    * confirmation 只授权已经确定的高风险操作，不能偷偷更换操作参数。
+    * confirmation 只授权已经确定的写入，不能偷偷更换操作参数。
 
     本节点在 ``interrupt`` 前不执行业务 Tool。唯一的写入是按稳定操作摘要
     幂等登记澄清预算；LangGraph 恢复时从头重放，不会重复扣费。
     """
     payload, ambiguous = _build_clarification_payload(state)
-    if state.get("execution_version") == 2:
-        from backend.agent.budget import reserve,settle
-        from hashlib import sha256
-        import json
-        key = sha256(json.dumps([state.get("active_goal_id"),state.get("plan_revision",0),
-                                (ambiguous or {}).get("call_id"),payload],
-                                sort_keys=True,ensure_ascii=False).encode()).hexdigest()
-        attempt = reserve("clarification",key)
-        settle(attempt,result={"registered":True})  # 重放同一中断不消耗新的澄清轮次。
+    _register_clarification_budget(state, payload, ambiguous)
     resume_value = interrupt(payload)
 
     # 取消是用户显式结束本轮，不把“取消执行”当作补充文本继续规划。
     if isinstance(resume_value, dict) and resume_value.get("cancelled") is True:
+        from backend.agent.strategies.contracts import is_request_direct
         return Command(
             update={
                 "execution_decision": "CANCELLED",
                 "response": "已取消本次任务。",
             },
-            goto=END,
+            goto="direct_finish" if is_request_direct(state) else END,
         )
 
     if ambiguous:
@@ -321,3 +388,22 @@ def ask_clarification(state: AgentState) -> Command:
         return _resume_after_reference_choice(state, resume_value)
 
     return _resume_after_free_text(state, resume_value)
+
+
+def _register_clarification_budget(state, payload, ambiguous) -> None:
+    """interrupt 会重放本节点：稳定标识确保同一问题只登记一次澄清预算。"""
+    if state.get("execution_version") != 2:
+        return
+    from hashlib import sha256
+    import json
+    from backend.agent.budget import reserve, settle
+    from backend.agent.strategies.contracts import is_request_direct
+
+    identity = [state.get("active_goal_id"), state.get("plan_revision", 0),
+                (ambiguous or {}).get("call_id"), payload]
+    if is_request_direct(state):
+        identity.append(state.get("decision_seq", 0))
+    # 旧模式的标识结构保持不变；改变它会让已持久化问题恢复时重复扣预算。
+    key = sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    attempt = reserve("clarification", key)
+    settle(attempt, result={"registered": True})

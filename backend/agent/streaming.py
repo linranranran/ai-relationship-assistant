@@ -12,6 +12,15 @@ from langgraph.config import get_stream_writer
 from backend.agent.request_recovery import interrupted_state
 
 STAGE_LABELS = {
+    "direct_decide": "结合完整请求与执行结果选择下一步",
+    "direct_validate": "校验工具参数和可信人物信息",
+    "direct_observe": "读取实际结果并检查循环限制",
+    "direct_finish": "整理整次请求的执行结果",
+    "strategy_dispatch": "选择当前任务的工具决策策略",
+    "decide_next": "根据执行结果选择下一步",
+    "validate_decision": "校验工具参数和执行范围",
+    "execute_discovery": "查找或查看可用工具",
+    "observe_strategy": "核验目标与循环进度",
     "validate_goals": "检查多个目标及执行依赖",
     "select_next_goal": "选择下一个业务目标",
     "finalize_goal": "核验目标完成情况",
@@ -37,7 +46,8 @@ TOOL_LABELS = {
     "add_relation": "新增关系", "update_relation": "修改关系", "delete_relation": "删除关系",
 }
 CUSTOM_TYPES = frozenset({"tool.started", "tool.finished", "tool.retrying", "tool.reused",
-                          "response.started", "response.delta", "goal.started", "goal.finished"})
+                          "response.started", "response.delta", "goal.started", "goal.finished",
+                          "strategy.deciding", "tool.searching", "tool.describing", "goal.evaluated", "loop.stopped"})
 _control = ContextVar("agent_execution_control", default=None)
 
 

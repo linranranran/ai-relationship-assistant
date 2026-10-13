@@ -1,0 +1,70 @@
+{
+  "stage": "pre-final diagnostic, before result-path and shared-executor scope fixes",
+  "sample_size_per_mode": 1,
+  "real_model": true,
+  "business_storage": "in-memory receipts",
+  "checkpoint": "InMemorySaver",
+  "classification_extraction_response_memory": "bypassed for strategy comparison",
+  "registry_size": 11,
+  "results": [
+    {
+      "scenario": "live_hobbies",
+      "strategy": "plan",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "sdk_calls": 3,
+      "budget": {
+        "model_calls": 3,
+        "charged_tokens": 4342,
+        "tool_attempts": 3,
+        "replans": 1
+      },
+      "catalog_hash": "a204e06e12d55d9c0a976b5f4a1d8d6b86a71a0eb6e351b832bf83bc070e2f18",
+      "latency_ms": 10688,
+      "repetition": 0,
+      "model": "qwen-max",
+      "predicate_verified": true,
+      "failure_reason": null
+    },
+    {
+      "scenario": "live_hobbies",
+      "strategy": "direct",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 2170,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "a204e06e12d55d9c0a976b5f4a1d8d6b86a71a0eb6e351b832bf83bc070e2f18",
+      "latency_ms": 3959,
+      "repetition": 0,
+      "model": "qwen-max",
+      "predicate_verified": true,
+      "failure_reason": null
+    },
+    {
+      "scenario": "live_hobbies",
+      "strategy": "discovery",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "sdk_calls": 4,
+      "budget": {
+        "model_calls": 4,
+        "charged_tokens": 5609,
+        "discovery_calls": 2,
+        "tool_attempts": 2
+      },
+      "catalog_hash": "a204e06e12d55d9c0a976b5f4a1d8d6b86a71a0eb6e351b832bf83bc070e2f18",
+      "latency_ms": 8854,
+      "repetition": 0,
+      "model": "qwen-max",
+      "predicate_verified": true,
+      "failure_reason": null
+    }
+  ]
+}

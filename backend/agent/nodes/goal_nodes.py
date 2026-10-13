@@ -1,4 +1,10 @@
-"""多目标的调度与收尾。第一版顺序运行，复用已有依赖 Tool 执行器。"""
+"""Plan / Discovery 的目标层；Direct 不经过目标调度。
+
+阅读顺序：select_next_goal（选目标）→ finalize_goal（验收并归档）→ 下一个目标。
+refine_goal 只修订一个不明确目标；finish_budget 是全请求耗尽后的共同出口。
+预算收尾先核对已提交回执，再验收尚未结束目标，最后生成确定性回复。
+私有辅助函数不新增图节点；节点名称和 Command.goto 是检查点的稳定接口。
+"""
 
 from copy import deepcopy
 import logging
@@ -21,7 +27,7 @@ def _first_node(intent):
         return "ask_clarification"
     if intent in {"ADD_PERSON", "UPDATE_PERSON", "ADD_RELATION", "UPDATE_RELATION"}:
         return "extract_info"
-    return "plan_tasks"
+    return "strategy_dispatch"
 
 
 def validate_goals(state):
@@ -41,6 +47,10 @@ def refine_goal(state):
             raise ModelBusinessValidationError(
                 "REFINEMENT_SCOPE_INVALID", "仅明确当前一个目标，不得新增目标或依赖。"
             )
+        from backend.agent.goal_policy import active_goal
+        current = active_goal(state)
+        if current["intent"] != "UNCLEAR" and value.goals[0].intent != current["intent"]:
+            raise ModelBusinessValidationError("REFINEMENT_INTENT_CHANGED", "已确定的业务意图不能因补充姓名被改写为另一种操作。")
         validate_goal_business_fields(value.goals[0], [])
 
     result = invoke_structured(
@@ -58,12 +68,14 @@ def refine_goal(state):
         state, intent=draft.intent, description=draft.description,
         person=draft.person.model_dump() if draft.person else None,
         relation=draft.relation.model_dump() if draft.relation else None,
+        query_spec=draft.query_spec.model_dump() if draft.query_spec else None,
     )
     target = _first_node(draft.intent)
     return Command(update={"goals": goals, "intent": draft.intent}, goto=target)
 
 
 def select_next_goal(state):
+    """顺序选择依赖满足的目标；跳过终态，阻断失败依赖，不重做独立成功目标。"""
     goals = deepcopy(state["goals"])
     by_id = {goal["goal_id"]: goal for goal in goals}
     for goal in goals:
@@ -93,46 +105,68 @@ def select_next_goal(state):
             goal_status=goal["status"],
             message=f"开始处理目标 {goals.index(goal) + 1}/{len(goals)}：{goal['description']}",
         )
-        # 工具数组属于当前目标；请求级已完成写操作、预算和原始提问不能清空。
-        update = {
-            "goals": goals,
-            "active_goal_id": goal["goal_id"],
-            "intent": goal["intent"],
-            "plan_revision": goal["plan_revision"],
-            "replan_count": 0,
-            "replan_feedback": {},
-            "tool_calls": [],
-            "tool_results": [],
-            "execution_errors": [],
-            "next_tool_index": 0,
-            "extracted_info": {},
-            "pending_confirmation": None,
-            "pending_reference": None,
-            "resolved_reference": state.get("resolved_reference", {})
-            if len(goals) == 1
-            else {},
-            "user_confirmed": False,
-            "needs_confirmation": False,
-            "execution_decision": "",
-            "response": "",
-        }
-        # 不能把上轮人物焦点直接套给本轮另一个目标。规划器从依赖结果中读取真实 ID。
-        target = _first_node(goal["intent"])
-        return Command(update=update, goto=target)
+        return Command(update=_goal_working_state(state, goals, goal), goto=_first_node(goal["intent"]))
     return Command(
         update={"goals": goals, "active_goal_id": None}, goto="generate_response"
     )
 
 
+def _goal_working_state(state, goals, goal) -> dict:
+    """初始化当前目标的临时工作区，不清空请求的已完成写入、预算和原始提问。
+
+    顶层 tool_* 只属于正在执行的目标；上一个目标的事实已由 finalize_goal 归档
+    到 goals。沿用这些字段会让下一个目标误用上一个目标的 ID、确认或错误信息。
+    """
+    return {
+        "goals": goals,
+        "active_goal_id": goal["goal_id"],
+        "intent": goal["intent"],
+        "plan_revision": goal["plan_revision"],
+        "replan_count": 0,
+        "replan_feedback": {},
+        "tool_calls": [],
+        "tool_results": [],
+        "execution_errors": [],
+        "next_tool_index": 0,
+        "extracted_info": {},
+        "pending_confirmation": None,
+        "pending_reference": None,
+        "resolved_reference": state.get("resolved_reference", {})
+        if len(goals) == 1
+        else {},
+        "user_confirmed": False,
+        "needs_confirmation": False,
+        "execution_decision": "",
+        "response": "",
+        "decision_seq": 0,
+        "pending_decision": {},
+        "strategy_messages": [],
+        "goal_evaluation": {},
+        "progress_snapshot": {},
+        "no_progress_rounds": 0,
+        "finish_repair_count": 0,
+        "protocol_repair_count": 0,
+        "loaded_tool_schemas": [],
+        "discovery_result": None,
+        "clarification_question": "",
+        "stop_reason": "",
+    }
+
+
 def finalize_goal(state):
+    """用工具回执验收当前目标，归档部分成果，再继续调度其他目标。"""
     goal = active_goal(state)
     calls, records = accumulated_records(goal, state)
-    ok, evidence = completion_evidence(goal, records, state.get("extracted_info"))
+    from backend.agent.goal_completion import record_facts
+    records = record_facts(goal, state)
+    ok, evidence = completion_evidence(goal, records, state.get("extracted_info"), state=state)
+    if state.get("stop_reason"):
+        ok = False  # 强制失败不能因残留旧回执被改写为成功。
     reason = (
         None
         if ok
         else (
-            "；".join(state.get("execution_errors", []))
+            state.get("stop_reason") or "；".join(state.get("execution_errors", []))
             or "没有取得满足目标完成条件的工具回执"
         )
     )
@@ -153,6 +187,7 @@ def finalize_goal(state):
         extracted_info=state.get("extracted_info", {}),
         completion_evidence=[record["call_id"] for record in evidence],
         failure_reason=reason,
+        completion_outcome=state.get("goal_evaluation", {}).get("outcome", ""),
     )
     emit_progress(
         "goal.finished",
@@ -167,13 +202,38 @@ def finalize_goal(state):
 
 
 def finish_budget(state):
-    """无需额外模型调用即可收尾；耗尽后不能再要求模型生成解释。"""
+    """请求总预算耗尽后的出口：核对真实副作用，保留成果，不再调用模型。
+
+    不按“缺少检查点记录”推断“没有写成功”。核对 PG/Neo4j 后，Direct 保存
+    请求账本；目标模式验收每个未结束目标。两条分支最终都进入 finalize_memory。
+    """
     from backend.db.agent_budget_store import BudgetStore
+    from backend.agent.strategies.contracts import is_request_direct
 
     store = BudgetStore(state["user_id"], state["request_id"])
     snapshot = store.snapshot()
     goals = deepcopy(state.get("goals", []))
-    # 当前节点可能在写成功、Checkpoint 前失败。以 PG 已持久化工具成功记录补齐事实。
+    saved, warnings = _load_verified_receipts(state)
+    if is_request_direct(state):
+        from backend.agent.nodes.direct_nodes import finish_direct_budget
+        return finish_direct_budget(state, snapshot, saved, warnings)
+
+    for goal in goals:
+        if goal["status"] in {"PENDING", "RUNNING", "WAITING"}:
+            _recover_goal_after_budget(state, goal, saved)
+    return Command(
+        update={
+            "goals": goals,
+            "execution_decision": "BUDGET_EXCEEDED",
+            "budget_snapshot": snapshot,
+            "response": _budget_response(state, snapshot, goals, warnings),
+        },
+        goto="finalize_memory",
+    )
+
+
+def _load_verified_receipts(state) -> tuple[dict, list]:
+    """按 owner + request 读取 PG 记录，再核对 PG 尚未成功的业务写入回执。"""
     from backend.db.postgres_client import get_postgres_connection
 
     with get_postgres_connection() as connection:
@@ -211,74 +271,90 @@ def finish_budget(state):
     for row in uncertain:
         if row["call_id"] in committed:
             saved[row["call_id"]] = {**row, "result": committed[row["call_id"]]}
-    for goal in goals:
-        if goal["status"] in {"PENDING", "RUNNING", "WAITING"}:
-            if goal["goal_id"] == state.get("active_goal_id"):
-                calls, records = accumulated_records(goal, state)
-            else:
-                calls, records = (
-                    goal.get("tool_calls", []),
-                    goal.get("tool_results", []),
-                )
-            present = {
-                record["call_id"]
-                for record in records
-                if record.get("status") in {"SUCCESS", "RESOLVED"}
-            }
-            for call in calls:
-                if call["call_id"] in saved and call["call_id"] not in present:
-                    row = saved[call["call_id"]]
-                    call["args"] = row.get("arguments", call["args"])
-                    records = [
-                        record
-                        for record in records
-                        if record["call_id"] != call["call_id"]
-                    ]
-                    records.append(
-                        {
-                            **call,
-                            "args": row.get("arguments", call["args"]),
-                            "status": "SUCCESS",
-                            "result": row["result"],
-                        }
-                    )
-            # 预查 NOT_FOUND 在新增成功后属于预期分支；恢复补回执也要使用
-            # 与执行器相同的规则，否则会把已成功新增仍判成失败。
-            successful_creates = {
-                dep
-                for call in calls
-                if call["tool"] == "add_person" and call["call_id"] in saved
-                for dep in call.get("depends_on", [])
-            }
+    return saved, warnings
+
+
+def _recover_goal_after_budget(state, goal, saved) -> None:
+    """补齐一个未结束目标的成功事实，再按原完成条件验收；不执行新工具。"""
+    if goal["goal_id"] == state.get("active_goal_id"):
+        calls, records = accumulated_records(goal, state)
+    else:
+        calls, records = (
+            goal.get("tool_calls", []),
+            goal.get("tool_results", []),
+        )
+    present = {
+        record["call_id"]
+        for record in records
+        if record.get("status") in {"SUCCESS", "RESOLVED"}
+    }
+    for call in calls:
+        if call["call_id"] in saved and call["call_id"] not in present:
+            row = saved[call["call_id"]]
+            call["args"] = row.get("arguments", call["args"])
             records = [
                 record
                 for record in records
-                if not (
-                    record.get("step_id") in successful_creates
-                    and record.get("tool") == "find_person"
-                    and record.get("result", {}).get("error_code") == "NOT_FOUND"
-                )
+                if record["call_id"] != call["call_id"]
             ]
-            extracted = (
-                state.get("extracted_info", {})
-                if goal["goal_id"] == state.get("active_goal_id")
-                else goal.get("extracted_info", {})
+            records.append(
+                {
+                    **call,
+                    "args": row.get("arguments", call["args"]),
+                    "status": "SUCCESS",
+                    "result": row["result"],
+                }
             )
-            ok, evidence = completion_evidence(goal, records, extracted)
-            goal.update(
-                status="SUCCEEDED" if ok else "BLOCKED",
-                failure_reason=None if ok else "任务预算已耗尽",
-                tool_calls=calls,
-                tool_results=records,
-                result=[
-                    record["result"]
-                    for record in records
-                    if record.get("status") in {"SUCCESS", "RESOLVED"}
-                    and isinstance(record.get("result"), dict)
-                    and record["result"].get("success")
-                ],
-                completion_evidence=[record["call_id"] for record in evidence],
-            )
+    # 预查 NOT_FOUND 在新增成功后属于预期分支；恢复补回执也要使用
+    # 与执行器相同的规则，否则会把已成功新增仍判成失败。
+    successful_creates = {
+        dep
+        for call in calls
+        if call["tool"] == "add_person" and call["call_id"] in saved
+        for dep in call.get("depends_on", [])
+    }
+    records = [
+        record
+        for record in records
+        if not (
+            record.get("step_id") in successful_creates
+            and record.get("tool") == "find_person"
+            and record.get("result", {}).get("error_code") == "NOT_FOUND"
+        )
+    ]
+    extracted = (
+        state.get("extracted_info", {})
+        if goal["goal_id"] == state.get("active_goal_id")
+        else goal.get("extracted_info", {})
+    )
+    # 验收需要实际参数和回执一起匹配，不能只看一个 success 标记。
+    enriched = [
+        {**record, "args": next(
+            (call.get("args", {}) for call in calls if call["call_id"] == record["call_id"]),
+            record.get("args", {}),
+        )}
+        for record in records
+    ]
+    ok, evidence = completion_evidence(goal, enriched, extracted, state=state)
+    goal.update(
+        status="SUCCEEDED" if ok else "BLOCKED",
+        failure_reason=None if ok else "任务预算已耗尽",
+        tool_calls=calls,
+        tool_results=records,
+        result=[
+            record["result"]
+            for record in records
+            if record.get("status") in {"SUCCESS", "RESOLVED"}
+            and isinstance(record.get("result"), dict)
+            and record["result"].get("success")
+        ],
+        completion_evidence=[record["call_id"] for record in evidence],
+    )
+
+
+def _budget_response(state, snapshot, goals, warnings) -> str:
+    """用固定文案说明各目标及部分写入结果，避免预算耗尽后再请求解释模型。"""
+    from backend.agent.nodes.execute_tools import BUSINESS_IDEMPOTENT_TOOLS
     reason = (
         snapshot.get("exhausted_reason")
         or state.get("budget_reason")
@@ -306,12 +382,4 @@ def finish_budget(state):
                 text += "（其中已完成：" + "、".join(writes) + "）"
         lines.append(text)
     lines.extend(warnings)
-    return Command(
-        update={
-            "goals": goals,
-            "execution_decision": "BUDGET_EXCEEDED",
-            "budget_snapshot": snapshot,
-            "response": "\n".join(lines),
-        },
-        goto="finalize_memory",
-    )
+    return "\n".join(lines)

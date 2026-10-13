@@ -145,6 +145,12 @@ def traced_node(name, node):
             # 第二类：模型结构化输出或业务契约校验最终失败。
             # ModelBusinessValidationError 是它的子类，因此也会进入这里。
             if isinstance(exc, StructuredOutputError):
+                from backend.agent.strategies.contracts import is_request_direct
+                if is_request_direct(state):
+                    # Direct 可能已有成功写入，不能用“没有开始操作”覆盖这些事实。
+                    result = Command(update={"stop_reason": "MODEL_PROTOCOL_INVALID"}, goto="direct_finish")
+                    record_node_result(state, result, outcome="validation_failed")
+                    return result
                 # 如果当前已选中一个目标，只结束这个目标；其他独立目标仍可继续调度。
                 if state.get("active_goal_id"):
                     # 把失败原因放入 execution_errors，交给 finalize_goal 记录目标结果。

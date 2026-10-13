@@ -19,6 +19,7 @@ from backend.config import (
     AGENT_TASK_MAX_REPLANS,
     AGENT_TASK_MAX_CLARIFICATIONS,
     AGENT_TASK_MAX_ACTIVE_SECONDS,
+    AGENT_TASK_MAX_DISCOVERY_CALLS,
 )
 
 
@@ -35,6 +36,7 @@ class BudgetLimits:
     replans: int = AGENT_TASK_MAX_REPLANS
     clarifications: int = AGENT_TASK_MAX_CLARIFICATIONS
     active_seconds: float = AGENT_TASK_MAX_ACTIVE_SECONDS
+    discovery_calls: int = AGENT_TASK_MAX_DISCOVERY_CALLS
 
     def __post_init__(self):
         if any(value <= 0 for value in asdict(self).values()) or self.goals > 4:

@@ -113,11 +113,16 @@ class ClarificationPrompt(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    # COMPLETED 是请求生命周期终态，不等于自然语言要求全部通过业务验收。
+    completion_basis: Optional[str] = Field(default=None, description="完成依据；Direct 为模型停止并有工具回执")
+    requirements_verified: Optional[bool] = Field(default=None, description="是否已逐项核验需求；无 goal 的 Direct 固定为 false")
     goals: list[dict] = Field(default_factory=list,description="安全的目标状态摘要，不包含工具原始参数")
     budget: Optional[dict] = Field(default=None,description="请求级消耗快照，不含执行租约")
     request_id: str = Field(description="本次请求的幂等键，重试和查询必须复用")
     run_id: Optional[str] = Field(default=None, description="本次执行/恢复批次；与 request_id 含义不同")
     response: str = Field(description="Agent 的回复")
+    error_code: Optional[str] = Field(default=None, description="失败时的安全错误分类，不含供应商原文")
+    retryable: Optional[bool] = Field(default=None, description="是否可直接重试；false 表示需先修复账户或配置")
     intent: Optional[str] = Field(default=None, description="识别的意图")
     tool_calls: Optional[list[str]] = Field(default=None, description="执行的 Tool 列表")
     status: Literal[

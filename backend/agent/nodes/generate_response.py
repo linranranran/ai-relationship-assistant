@@ -20,11 +20,28 @@ def generate_response(state: AgentState) -> Command:
     输出：state["response"]
     """
 
-    if state.get("execution_version") == 2:
+    from backend.agent.strategies.contracts import is_request_direct
+    if is_request_direct(state):
+        import json
+        from backend.agent.direct_runtime import direct_records
+        prompt = (
+            "回答用户的完整原始请求。下面工具回执才是操作是否成功的证据；模型草稿不是证据。"
+            "不要把一次工具成功说成全部需求完成。说明已完成、被拒绝、失败和未执行部分；"
+            "NOT_FOUND 表示查不到人物，空字段表示暂无记录，不得编造。没有业务工具的闲聊可以直接回答。"
+            "用户拒绝的写操作未执行，已经提交的操作不会因后续取消或失败而回滚。\n"
+            "用户界面只展示姓名、业务结果和变更，不输出内部人物/关系 ID、call_id 或参数 JSON。"
+            "用户本人称为‘你’，不要把登录手机号当作姓名展示。\n"
+            + json.dumps({"question": state["user_input"], "user_clarifications": state.get("direct_clarifications", []),
+                          "tool_records": direct_records(state),
+                          "answer_draft": state.get("direct_final_message", {}).get("content", ""),
+                          "requirements_verified": False}, ensure_ascii=False, default=str)
+        )
+    elif state.get("execution_version") == 2:
         import json
 
         prompt = (
-            "根据下面各业务目标的真实执行结果回答原始问题。分别说明成功、失败和未执行部分；不能把一个成功工具说成整个任务成功。\n"
+            "根据下面各业务目标的真实执行结果回答原始问题。分别说明成功、失败和未执行部分；不能把一个成功工具说成整个任务成功。"
+            "completion_outcome=NOT_FOUND 表示查询完成但没有找到目标；NO_RECORD 表示对应字段暂无记录。不能编造属性或把负向查询说成写入成功。\n"
             + json.dumps(
                 {
                     "question": state["user_input"],
@@ -33,6 +50,8 @@ def generate_response(state: AgentState) -> Command:
                             "description": goal["description"],
                             "status": goal["status"],
                             "failure_reason": goal.get("failure_reason"),
+                            "completion_outcome": goal.get("completion_outcome"),
+                            "query_spec": goal.get("query_spec"),
                             "result_excerpt": json.dumps(
                                 goal.get("result", []), ensure_ascii=False
                             )[:1600],
@@ -91,7 +110,11 @@ def generate_response(state: AgentState) -> Command:
         )
     # Checkpoint / conversation_message 保存完整答案，不保存逐块增量。
     update = {"response": "".join(pieces)}
-    if state.get("execution_version") == 2:
+    if is_request_direct(state):
+        # 没有需求清单不能宣称逐项验收；这个终态只代表模型结束了调用循环。
+        update.update(execution_decision="AGENT_FINISHED", completion_basis="MODEL_STOP_WITH_TOOL_RECEIPTS",
+                      requirements_verified=False)
+    elif state.get("execution_version") == 2:
         update["execution_decision"] = (
             "COMPLETE"
             if all(g["status"] == "SUCCEEDED" for g in state["goals"])

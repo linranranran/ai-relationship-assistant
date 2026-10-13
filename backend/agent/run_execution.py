@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timezone
 from threading import Event, Thread
 from time import perf_counter
-from fastapi import Response
+from fastapi import HTTPException, Response
 from backend.agent.graph import get_agent_graph
 from backend.agent.streaming import StreamingGraph, execution_control, ExecutionCancelled
 from backend.agent.tracing import request_trace, trace_event
@@ -21,6 +21,7 @@ from backend.agent.request_idempotency import claim_agent_request, save_agent_re
 from backend.models.schemas import ChatRequest, ChatResponse
 from backend.config import AGENT_RUN_LEASE_SECONDS
 from backend.db.postgres_client import get_postgres_connection
+from backend.services.model_errors import classify_model_error
 
 logger = logging.getLogger(__name__)
 
@@ -172,8 +173,16 @@ def _execute_with_audit(run):
             if state["cancelled"]:
                 response = _finish_cancellation(run, get_agent_graph(), on_claim)
             else:
+                # 分类穿过 HTTP 包装进入 SSE/状态查询；不能把明确原因二次覆盖成通用提示。
+                failure = classify_model_error(exc)
+                message = failure.message if failure is not None else (
+                    str(exc.detail) if isinstance(exc, HTTPException) and exc.status_code == 409 else
+                    "执行暂未完成，请使用原请求重试；已成功的步骤会复用。"
+                )
                 response = ChatResponse(request_id=run["request_id"], status="FAILED",
-                                        response="执行暂未完成，请使用原请求重试；已成功的步骤会复用。")
+                                        response=message,
+                                        error_code=failure.code if failure is not None else None,
+                                        retryable=failure.retryable if failure is not None else None)
             finish_run(run, response.model_dump(mode="json"))
             record_request_result(response)
         except RunLeaseLost:

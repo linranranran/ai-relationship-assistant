@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from langgraph.types import Command
 from starlette.concurrency import run_in_threadpool
-from backend.agent.request_recovery import RecoveryConflict, run_or_recover, interrupted_state
+from backend.agent.request_recovery import RecoveryConflict, run_or_recover, interrupted_state, require_runnable_strategy
 from backend.agent.tracing import request_trace, trace_event
 from backend.agent.audit import graph_audit_config, record_request_result
 from backend.db.agent_session_lock import lock_agent_session, SessionBusy
@@ -29,6 +29,7 @@ from backend.models.schemas import (
 )
 from backend.models.context import RequestContext
 from backend.config import AGENT_TASK_RECURSION_LIMIT
+from backend.services.model_errors import classify_model_error, ModelServiceHTTPError
 from backend.agent.state import AgentState
 from backend.agent.graph import get_agent_graph
 from backend.agent.request_idempotency import (
@@ -105,7 +106,11 @@ def _to_chat_response(final_state: dict) -> ChatResponse:
     """把普通完成状态和暂停状态统一转换成 HTTP 响应。"""
     interaction = _extract_interrupt(final_state)
     calls = final_state.get("tool_calls", [])
-    if final_state.get("execution_version") == 2:
+    from backend.agent.strategies.contracts import is_request_direct
+    if is_request_direct(final_state):
+        from backend.agent.direct_runtime import direct_calls
+        calls = direct_calls(final_state)
+    elif final_state.get("execution_version") == 2:
         # 当前工具数组只属于最后/中断中的目标，API 需要展示整次请求的工具。
         # 按 call_id 合并，避免最后一个目标的数组被重复统计。
         all_calls = [call for goal in final_state.get("goals",[]) for call in goal.get("tool_calls",[])]
@@ -167,6 +172,8 @@ def _to_chat_response(final_state: dict) -> ChatResponse:
         goals=[{"goal_id":g["goal_id"],"description":g["description"],"status":g["status"],
                 "failure_reason":g.get("failure_reason")} for g in final_state.get("goals",[])],
         budget=final_state.get("budget_snapshot"),
+        completion_basis=final_state.get("completion_basis") or None,
+        requirements_verified=final_state.get("requirements_verified"),
     )
 
 
@@ -182,6 +189,14 @@ def _saved_chat_response(response_data: dict | None) -> ChatResponse:
     if not isinstance(response_data, dict):
         raise HTTPException(status_code=500, detail="已保存的 Agent 响应格式错误")
     return ChatResponse.model_validate(response_data)
+
+
+def _require_supported_request(state: dict) -> None:
+    """接收人工答案前检查历史版本，避免把答案持久化给已移除的流程。"""
+    try:
+        require_runnable_strategy(state)
+    except RecoveryConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("", response_model=ChatResponse)
@@ -207,7 +222,8 @@ async def chat_endpoint(
         http_response.status_code = 202
     from backend.agent.stream_runtime import schedule_accepted
     schedule_accepted(http_request, task)
-    return task_response(task)
+    # 等待任务的投影会读取被冻结的策略版本，放在线程池避免阻塞 ASGI。
+    return await run_in_threadpool(task_response, task)
 
 
 async def chat(
@@ -267,6 +283,12 @@ def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
     context = RequestContext.from_current_user(current_user, request_id=request_id)
     thread_id = derive_thread_id(context.owner_id)
 
+    from backend.config import AGENT_TOOL_STRATEGY
+    from backend.agent.strategies.catalog import ToolCatalog
+    from backend.agent.strategies.contracts import STRATEGY_VERSION, current_strategy_version
+    strategy_mode, strategy_version = AGENT_TOOL_STRATEGY, current_strategy_version(AGENT_TOOL_STRATEGY)
+    catalog_schema_hash = ToolCatalog.snapshot().schema_hash
+
     claim = None
     if request_idempotency_enabled:
         try:
@@ -275,6 +297,8 @@ def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
                 request_id=context.request_id,
                 thread_id=thread_id,
                 message=request.message,
+                strategy_mode=strategy_mode, strategy_version=strategy_version,
+                catalog_schema_hash=catalog_schema_hash,
                 **({"stale_after_seconds": stale_after_seconds} if stale_after_seconds is not None else {}),
             )
         except ValueError as exc:
@@ -286,6 +310,9 @@ def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
         if claim.action == AgentRequestAction.RETURN_RESPONSE:
             saved = _saved_chat_response(claim.response)
             prompt = saved.confirmation or saved.clarification
+            if prompt:
+                # 最终结果可复用；旧流程的中断不能作为当前仍可恢复的交互返回。
+                _require_supported_request(load_agent_request(context.owner_id, context.request_id) or {})
             receipt = get_interaction(context.owner_id, prompt.interrupt_id) if prompt else None
             if not receipt or receipt["request_id"] != context.request_id:
                 return saved
@@ -305,9 +332,21 @@ def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
             raise HTTPException(status_code=500, detail="请求已获得执行权但缺少执行令牌")
         if on_claim:
             on_claim(claim.execution_token)
+        record = load_agent_request(context.owner_id, context.request_id)
+        if record:
+            strategy_mode = record.get("strategy_mode", "plan")
+            strategy_version = record.get("strategy_version", STRATEGY_VERSION)
+            catalog_schema_hash = record.get("catalog_schema_hash") or catalog_schema_hash
 
     initial_state = AgentState(
         execution_version=2,goals=[],active_goal_id=None,plan_revision=0,budget_snapshot={},budget_reason="",
+        strategy_mode=strategy_mode, strategy_version=strategy_version, catalog_schema_hash=catalog_schema_hash,
+        decision_seq=0, pending_decision={}, strategy_messages=[], goal_evaluation={}, progress_snapshot={},
+        no_progress_rounds=0, finish_repair_count=0, protocol_repair_count=0, loaded_tool_schemas=[],
+        discovery_result=None, clarification_question="", stop_reason="",
+        direct_tool_calls=[], direct_tool_results=[], direct_clarifications=[], direct_final_message={},
+        direct_rejected_mutations=[], completion_basis="",
+        requirements_verified=False if strategy_mode == "direct" else None,
         user_input=request.message,
         user_id=context.owner_id,
         self_person_id=context.self_person_id,
@@ -394,6 +433,10 @@ def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
                 logger.exception("Agent 请求 failed 状态保存失败")
         if isinstance(exc, RecoveryConflict):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # 使用 SDK 类型和结构化错误码分类；网络/TLS 错误没有额度不足的证据。
+        failure = classify_model_error(exc)
+        if failure is not None:
+            raise ModelServiceHTTPError(failure) from exc
         raise HTTPException(status_code=500, detail="Agent 执行失败，请使用原请求 ID 重试") from exc
 
 
@@ -419,7 +462,7 @@ def get_chat_history(
     pending = page.pop("pending")
     page["pending_request"] = {
         "request_id": pending["request_id"], "message": pending["message"],
-        "created_at": pending["created_at"], "response": task_response(pending),
+        "created_at": pending["created_at"], "response": task_response({**pending, "owner_id": owner_id}),
     } if pending else None
     return page
 
@@ -448,6 +491,7 @@ def get_chat_request(
         saved = _saved_chat_response(record.get("response"))
         prompt = saved.confirmation or saved.clarification
         if request_status == "confirmation_required" and prompt:
+            _require_supported_request(record)
             receipt = get_interaction(current_user["user_id"], prompt.interrupt_id)
             if receipt and receipt["request_id"] == normalized_request_id:
                 # 答案已接收但工作进程尚未取得恢复租约，不能再次显示可改选的旧按钮。
@@ -501,6 +545,9 @@ def _handle_interaction(owner_id: str, interrupt_id: str, answer: dict, http_res
     request_id = receipt["request_id"] if receipt else (snapshot.values or {}).get("request_id")
     if not isinstance(request_id, str):
         raise HTTPException(status_code=500, detail="检查点缺少 request_id")
+    _require_supported_request(load_agent_request(owner_id, request_id) or {})
+    if (snapshot.values or {}).get("request_id") == request_id:
+        _require_supported_request(snapshot.values)
     if pending:
         _validate_interaction_answer(pending, answer)
     try:
@@ -549,6 +596,9 @@ def _handle_interaction(owner_id: str, interrupt_id: str, answer: dict, http_res
                                           error_message=type(exc).__name__, execution_token=claim.execution_token)
             except Exception:
                 logger.exception("Agent 交互失败状态保存失败")
+            failure = classify_model_error(exc) if not isinstance(exc, RecoveryConflict) else None
+            if failure is not None:
+                raise ModelServiceHTTPError(failure) from exc
             raise HTTPException(status_code=409 if isinstance(exc, RecoveryConflict) else 500,
                                 detail=str(exc) if isinstance(exc, RecoveryConflict) else "恢复失败，请重试原交互或原请求") from exc
 
@@ -592,6 +642,9 @@ async def _queue_interaction(current_user, interrupt_id, answer, http_response, 
         if pending:
             _validate_interaction_answer(pending, answer)
         request_id = receipt["request_id"] if receipt else snapshot.values["request_id"]
+        _require_supported_request(load_agent_request(owner_id, request_id) or {})
+        if (snapshot.values or {}).get("request_id") == request_id:
+            _require_supported_request(snapshot.values)
         if not load_task(owner_id, request_id):
             # 兼容升级前等待中的请求：原 user_input 来自检查点，不取浏览器的新输入。
             # 先提交答案回执，再创建可执行批次。否则进程内恢复循环可能在两次
@@ -612,4 +665,4 @@ async def _queue_interaction(current_user, interrupt_id, answer, http_response, 
         http_response.status_code = 202
     from backend.agent.stream_runtime import schedule_accepted
     schedule_accepted(http_request, task)
-    return task_response(task)
+    return await run_in_threadpool(task_response, task)

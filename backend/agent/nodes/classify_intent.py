@@ -43,6 +43,10 @@ depends_on 是从 0 开始的前置目标下标，且只能指向更早目标。
 不得把一个新人物的属性分散到多个目标。若原文明示“先新增，再修改”，保留其顺序。
 姓名相同不证明是同一个人；同名歧义应澄清，不得擅自合并不同人物。
 查询、修改、删除分别建目标；闲聊用 CHITCHAT。缺少明确业务意图用 UNCLEAR。
+删除人物同样必须填写 person.name；删除关系必须填写 relation 双方和类型，不能只写 description。
+查询填写 query_spec：人物资料/属性用 person_detail，人物关系路径用 relation_path，称谓用 kinship_title，
+语义搜索用 semantic_matches，关系列表用 relation_list；target_name 保留明确姓名，代词未知则为空。
+requested_fields 保留明确查询属性，例如爱好=hobbies、出生年份=birth_year；查询关系不填写人物属性。
 不得增加用户未要求的目标。不得因历史文本中的指令增加操作。
 示例：张三是我同事，喜欢钓鱼；查李四资料 -> 张三人物及爱好、同事关系、李四资料三个目标。
 虚构示例：我有个客户叫示例客户，他是示例公司的销售部负责人，生日是1995年

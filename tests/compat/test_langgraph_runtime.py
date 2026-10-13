@@ -58,7 +58,7 @@ def build_interruptible_graph():
         # The first invocation pauses here. On resume, interrupt() returns the
         # value carried by Command(resume=...), and the node continues normally.
         print(f"Requesting approval for {config}")
-        approved = interrupt({"value": state["value"]})
+        approved = interrupt({"value": state["value"],"test":111})
         print(f"request_approval获取到用户输入:{approved}")
         return {"approved": approved is True}
 
@@ -83,6 +83,7 @@ class LangGraphCompatibilityTests(unittest.TestCase):
         config = {"configurable": {"thread_id": "compat-thread"}}
 
         paused = app.invoke({"value": "delete-person"}, config=config)
+        print(f"paused={paused["__interrupt__"]}")
         self.assertIn("__interrupt__", paused)
 
         resumed = app.invoke(Command(resume=[1,2,3]), config=config)

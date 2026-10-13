@@ -3,7 +3,7 @@
 第一版只允许引用已经排在前面的步骤，因此执行器可以稳定地按顺序运行，
 不用让大模型决定并发调度。引用格式：
 
-    {"$ref": {"step_id": "find_target", "path": "data.0.id"}}
+    {"$ref": {"step_id": "find_target", "path": "data.id"}}
 
 ``path`` 使用点号访问字典字段，数字片段访问列表下标。
 """
@@ -16,6 +16,33 @@ from backend.exception.AgentException import ToolPlanValidationError
 
 REFERENCE_KEY = "$ref"
 STEP_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+
+
+def validate_known_result_contracts(calls: list[dict]) -> None:
+    """拒绝已经知道错误的结果路径，不能为了定位参数错误先执行一次 Tool。
+
+    只校验项目明确的返回形状，任意动态字段仍由执行器解析真实结果。
+    这里拒绝而非自动改写，避免系统改变模型原本意图中的“第一个候选”。
+    """
+    sources = {c["step_id"]: c["tool"] for c in calls}
+    def visit(value):
+        if is_result_reference(value):
+            step, path = _parse_reference(value)
+            tool = sources.get(step)
+            wrong_find = tool == "find_person" and re.match(r"^data\.\d+(?:\.|$)", path)
+            wrong_detail = tool == "get_person_detail" and path in {"data.id", "data.name"}
+            if wrong_find or wrong_detail:
+                correct = "data.id" if wrong_find else "data.person.id / data.person.name"
+                from backend.agent.contracts import ModelBusinessValidationError
+                raise ModelBusinessValidationError("TOOL_RESULT_PATH_INVALID", f"{tool} 成功返回对象；请使用 {correct}，不能假设它是候选数组。")
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+    for call in calls:
+        visit(call.get("args", {}))
 
 
 def is_result_reference(value: Any) -> bool:

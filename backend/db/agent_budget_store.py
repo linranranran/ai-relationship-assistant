@@ -18,6 +18,7 @@ def ensure_budget_schema():
             .joinpath("009_agent_budget.sql")
             .read_text(encoding="utf-8")
         )
+        connection.execute(Path(__file__).with_name("migrations").joinpath("011_tool_strategy_loop_budget.sql").read_text(encoding="utf-8"))
 
 
 class BudgetStore:
@@ -113,6 +114,7 @@ class BudgetStore:
                     "limits",
                     "model_calls",
                     "tool_attempts",
+                    "discovery_calls",
                     "charged_tokens",
                     "replans",
                     "clarifications",
@@ -146,12 +148,13 @@ class BudgetStore:
             "tool": "tool_attempts",
             "replan": "replans",
             "clarification": "clarifications",
+            "discovery": "discovery_calls",
         }[kind]
         reason, result = None, None
         with self._locked() as (connection, row):
             self._account(connection, row)
             # 只复用成功且已结算的模型结果；未知结果不得当作零成本重新调用。
-            if kind in {"model", "replan", "clarification"}:
+            if kind in {"model", "replan", "clarification", "discovery"}:
                 cached = connection.execute(
                     "SELECT attempt_id,result FROM agent_budget_attempt WHERE owner_id=%s AND "
                     "request_id=%s AND kind=%s AND operation_key=%s AND status='settled' AND result IS NOT NULL "

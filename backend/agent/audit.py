@@ -265,6 +265,12 @@ def record_node_result(state, result, *, outcome="completed"):
             scope["client"].update_current_span(metadata={
                 "goal_id": state.get("active_goal_id"), "intent": state.get("intent"),
                 "plan_revision": state.get("plan_revision", 0), "outcome": outcome,
+                "strategy_mode": state.get("strategy_mode", "plan"),
+                "strategy_version": state.get("strategy_version", "1"),
+                "catalog_schema_hash": state.get("catalog_schema_hash"),
+                "decision_seq": state.get("decision_seq", 0),
+                "completion_basis": state.get("completion_basis"),
+                "requirements_verified": state.get("requirements_verified"),
             })
             # dict.update 是方法；只有 Command.update 才是节点的状态增量。
             update = result if isinstance(result, dict) else getattr(result, "update", result)
@@ -334,8 +340,8 @@ def audit_model(kwargs, *, mode, observation_type="generation"):
         span = stack.enter_context(client.start_as_current_observation(
             name=f"model.{mode}", as_type=observation_type, model=kwargs["model"],
             input=audit_payload(kwargs.get("messages", kwargs.get("input"))),
-            model_parameters={key: value for key, value in kwargs.items()
-                              if key not in {"model", "messages", "input"}}, metadata={"mode": mode},
+            model_parameters=audit_payload({key: value for key, value in kwargs.items()
+                              if key not in {"model", "messages", "input"}}), metadata={"mode": mode},
         ))
     except Exception as exc:
         try:

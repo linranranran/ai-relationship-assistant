@@ -1,7 +1,13 @@
-# ============================================================
-# Agent 状态图 —— LangGraph 编排
-# 这是整个 Agent 的"大脑"，连接所有节点
-# ============================================================
+"""从这里理解 Agent 的入口和图节点；具体分支条件在各节点的 Command.goto。
+
+建议先看 prepare_and_classify 的两条入口，再沿下面两条主线阅读：
+Direct：direct_nodes.py → execute_tools.py → observe_execution.py（委托 Direct）。
+Plan：classify_intent.py → goal_nodes.py → plan_tasks.py → execute_tools.py → observe_execution.py。
+共用：ask_clarification / request_confirmation（中断）及 finalize_memory（记忆收尾）。
+
+本文件负责注册节点，不在这里重复业务判断。不要给 Command 节点额外加静态边：
+goto 和静态边会同时生效，可能把本应停止的流程继续调度出去。
+"""
 
 from threading import Lock
 from backend.agent.tracing import traced_node
@@ -32,6 +38,8 @@ from backend.config import (
 
 def dispatch_request(state: AgentState) -> Command:
     """新问题进入理解链路；WAIT 重试进入原计划，不能重新调用规划模型。"""
+    from backend.agent.request_recovery import require_runnable_strategy
+    require_runnable_strategy(state)
     if state.get("resume_execution") is True:
         return Command(update={"resume_execution": False}, goto="execute_tools")
     return Command(goto="resolve_person_reference")
@@ -41,9 +49,13 @@ def prepare_and_classify(state: AgentState) -> Command:
     """用 Command 路由，避免预算停止仍沿静态边触发 classify_intent。
 
     LangGraph 中 Command.goto 与静态边会一起调度，并非互相覆盖。
-    上下文构造成功才进入分类；包装器捕获预算耗尽时只进入预算收尾。
+    上下文成功后按请求已冻结的策略版本分流；预算耗尽则只进入预算收尾。
     """
-    return Command(update=prepare_context(state), goto="classify_intent")
+    from backend.agent.request_recovery import require_runnable_strategy
+    from backend.agent.strategies.contracts import is_request_direct
+    require_runnable_strategy(state)
+    # Direct 从完整请求开始，跳过意图/goal/提取/调度。
+    return Command(update=prepare_context(state), goto="direct_decide" if is_request_direct(state) else "classify_intent")
 
 
 def build_agent_graph(checkpointer=None):
@@ -53,21 +65,32 @@ def build_agent_graph(checkpointer=None):
     路由策略：Command 模式 — 每个节点内部用 Command(update, goto) 决定跳转，
     不能同时添加对应静态边，否则预算停止时可能产生并行执行。
 
-    新请求的 V2 节点流转：
+    Direct 跳过 goal 的路径：
+    prepare_context → direct_decide → direct_validate → execute_tools → observe_execution
+    observe_execution 委托 direct_observe → direct_decide / ask_clarification / direct_finish / END
+    direct_finish → generate_response / finalize_memory（请求回执，非逐 goal 验收）
+    Plan / Discovery 的节点流转：
     prepare_context       → classify_intent （构造受 Token 预算约束的三层记忆上下文）
     classify_intent       → validate_goals → select_next_goal
-    select_next_goal      → extract_info / plan_tasks / ask_clarification / generate_response
-    extract_info          → plan_tasks
+    select_next_goal      → extract_info / strategy_dispatch / ask_clarification / generate_response
+    extract_info          → plan_tasks （plan_tasks 会按已固定策略转发）
+    strategy_dispatch     → plan_tasks（批量计划）/ decide_next（逐步决策）
     plan_tasks            → execute_tools / ask_clarification
-    request_confirmation  → execute_tools / END
+    decide_next           → validate_decision（先保存模型动作，再校验与执行）
+    validate_decision     → execute_tools / execute_discovery / ask_clarification / finalize_goal
+    execute_discovery     → observe_strategy（搜索/描述只返回目录，不执行业务写入）
+    request_confirmation  → execute_tools / select_next_goal / END（Direct 分支见确认节点）
     execute_tools         → observe_execution
     observe_execution     → finalize_goal / plan_tasks / ask_clarification / END
+    observe_execution     → observe_strategy（Discovery 使用公共执行器的回执）
+    observe_strategy      → decide_next / finalize_goal / ask_clarification / END
     finalize_goal         → select_next_goal （继续独立目标或阻断失败依赖）
     generate_response     → finalize_memory （保存本轮短期消息并预留摘要/事实扩展点）
     finalize_memory       → END
     ask_clarification     → execute_tools / extract_info / plan_tasks / refine_goal（interrupt 后恢复）
     任一节点预算耗尽       → finish_budget → finalize_memory；不再调用模型。
-    旧 Checkpoint 没有 execution_version=2，仍使用原单目标分支。
+    旧 Plan Checkpoint 没有 execution_version=2，仍使用原单目标分支。
+    Direct 只支持当前请求级循环，旧模式检查点在执行/恢复前拒绝。
     """
     from backend.agent.nodes.resolve_person_reference import resolve_person_reference
 
@@ -78,6 +101,9 @@ def build_agent_graph(checkpointer=None):
         finalize_goal,
         finish_budget,
         refine_goal,
+    )
+    from backend.agent.nodes.strategy_nodes import (
+        strategy_dispatch, decide_next, validate_decision, execute_discovery, observe_strategy_execution,
     )
     from openai import APIConnectionError, APITimeoutError, RateLimitError
 
@@ -90,7 +116,7 @@ def build_agent_graph(checkpointer=None):
         retry_on=(APIConnectionError, APITimeoutError, RateLimitError),
     )
 
-    # ── 注册节点 ──
+    # ── 共用入口：新请求解析指代；WAIT 原请求恢复直接回执行器 ──
     graph.add_node(
         "dispatch_request", traced_node("dispatch_request", dispatch_request)
     )
@@ -101,6 +127,7 @@ def build_agent_graph(checkpointer=None):
     graph.add_node(
         "prepare_context", traced_node("prepare_context", prepare_and_classify)
     )
+    # ── 目标模式：分类/提取/批次计划；Direct 不经过这三个节点 ──
     graph.add_node(
         "classify_intent",
         traced_node("classify_intent", classify_intent),
@@ -112,6 +139,7 @@ def build_agent_graph(checkpointer=None):
     graph.add_node(
         "plan_tasks", traced_node("plan_tasks", plan_tasks), retry_policy=retry
     )
+    # ── 共用执行、观察、交互和收尾；观察函数内部再分流策略 ──
     graph.add_node("execute_tools", traced_node("execute_tools", execute_tools))
     graph.add_node(
         "observe_execution", traced_node("observe_execution", observe_execution)
@@ -127,6 +155,7 @@ def build_agent_graph(checkpointer=None):
         traced_node("request_confirmation", request_confirmation),
     )
     graph.add_node("finalize_memory", traced_node("finalize_memory", finalize_memory))
+    # ── Plan / Discovery 目标调度及 Discovery 逐轮决策 ──
     for name, node in (
         ("validate_goals", validate_goals),
         ("select_next_goal", select_next_goal),
@@ -135,6 +164,16 @@ def build_agent_graph(checkpointer=None):
     ):
         graph.add_node(name, traced_node(name, node))
     graph.add_node("finish_budget", finish_budget)
+    for name, node in (("strategy_dispatch", strategy_dispatch), ("decide_next", decide_next),
+                       ("validate_decision", validate_decision), ("execute_discovery", execute_discovery),
+                       ("observe_strategy", observe_strategy_execution)):
+        graph.add_node(name, traced_node(name, node), retry_policy=retry if name == "decide_next" else None)
+
+    # ── Direct：以完整请求为范围，跳过 goal 层 ──
+    from backend.agent.nodes.direct_nodes import direct_decide, direct_validate, direct_observe, direct_finish
+    for name, node in (("direct_decide", direct_decide), ("direct_validate", direct_validate),
+                       ("direct_observe", direct_observe), ("direct_finish", direct_finish)):
+        graph.add_node(name, traced_node(name, node), retry_policy=retry if name == "direct_decide" else None)
 
     # ── 入口 ──
     graph.set_entry_point("dispatch_request")

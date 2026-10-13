@@ -1,0 +1,318 @@
+{
+  "stage": "final authorized provider comparison",
+  "date": "2026-10-11",
+  "provider": "configured Alibaba Cloud",
+  "model": "qwen-max",
+  "scenario": "single synthetic named person hobbies query",
+  "sample_size_per_mode": 3,
+  "registry_size": 11,
+  "business_storage": "in-memory receipts",
+  "checkpoint": "InMemorySaver",
+  "classification_extraction_response_memory": "bypassed for strategy comparison",
+  "tracing_enabled": false,
+  "strict": false,
+  "temperature": 0,
+  "success_predicate": "goal contract satisfied and last business tool get_person_detail; mocked person p1 has hobbies",
+  "token_metric": "budget charged_tokens; provider usage when supplied, conservative reservation otherwise",
+  "limitations": [
+    "Only one read scenario, three samples per mode; not a production success rate or latency benchmark.",
+    "Business data and budget persistence simulated; no PostgreSQL/Neo4j/checkpointer integration.",
+    "Plan public response capture was empty because SDK raw-response wrapper was not decoded in recorder; underlying parsing failure reason not established."
+  ],
+  "results": [
+    {
+      "scenario": "live_hobbies",
+      "strategy": "plan",
+      "repetition": 0,
+      "model": "qwen-max",
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "predicate_verified": true,
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 1,
+      "budget": {
+        "model_calls": 1,
+        "charged_tokens": 1259,
+        "tool_attempts": 2
+      },
+      "latency_ms": 4543,
+      "last_super_step": 11
+    },
+    {
+      "scenario": "live_hobbies",
+      "strategy": "direct",
+      "repetition": 0,
+      "model": "qwen-max",
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "predicate_verified": true,
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 2347,
+        "tool_attempts": 2
+      },
+      "latency_ms": 4422,
+      "last_super_step": 16
+    },
+    {
+      "scenario": "live_hobbies",
+      "strategy": "discovery",
+      "repetition": 0,
+      "model": "qwen-max",
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "predicate_verified": true,
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 5,
+      "budget": {
+        "model_calls": 5,
+        "charged_tokens": 7592,
+        "replans": 2,
+        "discovery_calls": 1,
+        "tool_attempts": 2
+      },
+      "latency_ms": 12081,
+      "last_super_step": 23,
+      "diagnostic": {
+        "wrong_find_parameter_name": true,
+        "repairs": 2
+      }
+    },
+    {
+      "scenario": "live_hobbies",
+      "strategy": "plan",
+      "repetition": 1,
+      "model": "qwen-max",
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "predicate_verified": true,
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 1,
+      "budget": {
+        "model_calls": 1,
+        "charged_tokens": 1259,
+        "tool_attempts": 2
+      },
+      "latency_ms": 3505,
+      "last_super_step": 11
+    },
+    {
+      "scenario": "live_hobbies",
+      "strategy": "direct",
+      "repetition": 1,
+      "model": "qwen-max",
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "predicate_verified": true,
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 2344,
+        "tool_attempts": 2
+      },
+      "latency_ms": 3659,
+      "last_super_step": 16
+    },
+    {
+      "scenario": "live_hobbies",
+      "strategy": "discovery",
+      "repetition": 1,
+      "model": "qwen-max",
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "predicate_verified": true,
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 4,
+      "budget": {
+        "model_calls": 4,
+        "charged_tokens": 5753,
+        "replans": 1,
+        "discovery_calls": 1,
+        "tool_attempts": 2
+      },
+      "latency_ms": 6358,
+      "last_super_step": 22,
+      "diagnostic": {
+        "wrong_find_parameter_name": true,
+        "repairs": 1
+      }
+    },
+    {
+      "scenario": "live_hobbies",
+      "strategy": "plan",
+      "repetition": 2,
+      "model": "qwen-max",
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "goals": [
+        "FAILED"
+      ],
+      "predicate_verified": false,
+      "business_tools": [],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 2586
+      },
+      "latency_ms": 10829,
+      "last_super_step": 9,
+      "failure_code": "OUTPUT_SCHEMA_INVALID",
+      "business_effects_started": false
+    },
+    {
+      "scenario": "live_hobbies",
+      "strategy": "direct",
+      "repetition": 2,
+      "model": "qwen-max",
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "predicate_verified": true,
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 2,
+      "budget": {
+        "model_calls": 2,
+        "charged_tokens": 2347,
+        "tool_attempts": 2
+      },
+      "latency_ms": 4293,
+      "last_super_step": 16
+    },
+    {
+      "scenario": "live_hobbies",
+      "strategy": "discovery",
+      "repetition": 2,
+      "model": "qwen-max",
+      "catalog_hash": "8b5a1bd9e12985b05c18cf65d44e65558bce1a3b565a76f05649f92291cd0bd1",
+      "goals": [
+        "SUCCEEDED"
+      ],
+      "predicate_verified": true,
+      "business_tools": [
+        "find_person",
+        "get_person_detail"
+      ],
+      "sdk_calls": 4,
+      "budget": {
+        "model_calls": 4,
+        "charged_tokens": 5742,
+        "replans": 1,
+        "discovery_calls": 1,
+        "tool_attempts": 2
+      },
+      "latency_ms": 7274,
+      "last_super_step": 22,
+      "diagnostic": {
+        "wrong_find_parameter_name": true,
+        "repairs": 1
+      }
+    }
+  ],
+  "summary": {
+    "plan": {
+      "runs": 3,
+      "completed": 2,
+      "model_calls": {
+        "median": 1,
+        "mean": 1.33,
+        "min": 1,
+        "max": 2
+      },
+      "charged_tokens": {
+        "median": 1259,
+        "mean": 1701.33,
+        "min": 1259,
+        "max": 2586
+      },
+      "latency_ms": {
+        "median": 4543,
+        "mean": 6292.33,
+        "min": 3505,
+        "max": 10829
+      },
+      "budget_replans": 0
+    },
+    "direct": {
+      "runs": 3,
+      "completed": 3,
+      "model_calls": {
+        "median": 2,
+        "mean": 2,
+        "min": 2,
+        "max": 2
+      },
+      "charged_tokens": {
+        "median": 2347,
+        "mean": 2346,
+        "min": 2344,
+        "max": 2347
+      },
+      "latency_ms": {
+        "median": 4293,
+        "mean": 4124.67,
+        "min": 3659,
+        "max": 4422
+      },
+      "budget_replans": 0
+    },
+    "discovery": {
+      "runs": 3,
+      "completed": 3,
+      "model_calls": {
+        "median": 4,
+        "mean": 4.33,
+        "min": 4,
+        "max": 5
+      },
+      "charged_tokens": {
+        "median": 5753,
+        "mean": 6362.33,
+        "min": 5742,
+        "max": 7592
+      },
+      "latency_ms": {
+        "median": 7274,
+        "mean": 8571,
+        "min": 6358,
+        "max": 12081
+      },
+      "budget_replans": 4
+    }
+  }
+}

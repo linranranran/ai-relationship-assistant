@@ -12,7 +12,7 @@ def select_context_for_node(state: AgentState, node_name: str) -> list[dict]:
     各节点增加专用 Prompt 后，``services.llm.chat`` 会对最终载荷再次执行预算检查，
     防止节点 Prompt 绕过 prepare_context 的总预算。
     """
-    allowed_nodes = {"classify_intent", "plan_tasks", "generate_response"}
+    allowed_nodes = {"classify_intent", "plan_tasks", "generate_response", "strategy"}
     if node_name not in allowed_nodes:
         raise ValueError(f"未知上下文消费者：{node_name}")
 
@@ -35,7 +35,7 @@ def select_context_for_node(state: AgentState, node_name: str) -> list[dict]:
             and role == "user"
             and content == current_input
         )
-        if node_name in {"classify_intent", "generate_response"} and is_current_input:
+        if node_name in {"classify_intent", "generate_response", "strategy"} and is_current_input:
             continue
         if node_name == "classify_intent" and context_type == "long_term_memory":
             # 意图分类只需要理解用户表达，不需要读取客户画像事实。

@@ -1,8 +1,15 @@
 """Agent 请求级幂等记录的 PostgreSQL 持久化函数。"""
 
 from psycopg.types.json import Jsonb
+from pathlib import Path
 
 from backend.db.postgres_client import get_postgres_connection
+
+
+def ensure_strategy_schema():
+    """启动时运行兼容迁移；不会在 import 时连接数据库。"""
+    with get_postgres_connection() as connection:
+        connection.execute(Path(__file__).with_name("migrations").joinpath("010_agent_request_strategy.sql").read_text(encoding="utf-8"))
 
 
 def try_insert_agent_request(
@@ -12,19 +19,24 @@ def try_insert_agent_request(
     thread_id: str,
     message_hash: str,
     execution_token: str,
+    strategy_mode: str = "plan",
+    strategy_version: str = "1",
+    catalog_schema_hash: str | None = None,
 ) -> bool:
     """首次请求插入 running 记录；唯一键冲突表示该 request_id 已存在。"""
     sql = """
         INSERT INTO agent_request
-            (owner_id, request_id, thread_id, message_hash, status, execution_token)
-        VALUES (%s, %s, %s, %s, 'running', %s)
+            (owner_id, request_id, thread_id, message_hash, status, execution_token,
+             strategy_mode, strategy_version, catalog_schema_hash)
+        VALUES (%s, %s, %s, %s, 'running', %s, %s, %s, %s)
         ON CONFLICT (owner_id, request_id) DO NOTHING
         RETURNING id
     """
     with get_postgres_connection() as connection:
         row = connection.execute(
             sql,
-            (owner_id, request_id, thread_id, message_hash, execution_token),
+            (owner_id, request_id, thread_id, message_hash, execution_token,
+             strategy_mode, strategy_version, catalog_schema_hash),
         ).fetchone()
     return row is not None
 
@@ -32,7 +44,8 @@ def try_insert_agent_request(
 def get_agent_request(owner_id: str, request_id: str) -> dict | None:
     sql = """
         SELECT id, owner_id, request_id, thread_id, message_hash, status,
-               response, error_message, execution_token, create_time, update_time
+               response, error_message, execution_token, create_time, update_time,
+               strategy_mode, strategy_version, catalog_schema_hash
         FROM agent_request
         WHERE owner_id = %s AND request_id = %s
         LIMIT 1

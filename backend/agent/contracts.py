@@ -64,6 +64,14 @@ class ExtractionResult(Contract):
     mentioned_people: list[str] = Field(default_factory=list, max_length=16)
 
 
+class QuerySpec(Contract):
+    """查询需求在初次理解时固定；规划模型不能自行改变验收条件。"""
+    kind: Literal["person_detail", "relation_path", "kinship_title", "semantic_matches", "relation_list"]
+    target_name: str | None = Field(default=None, min_length=1, max_length=100)
+    requested_fields: list[Literal["name", "gender", "birth_year", "occupation", "education",
+                                  "hobbies", "personality", "tags", "note"]] = Field(default_factory=list, max_length=9)
+
+
 class GoalDraft(Contract):
     intent: IntentKind
     description: str = Field(min_length=1, max_length=1000)
@@ -74,6 +82,7 @@ class GoalDraft(Contract):
     # 默认 None 用于读取旧的 Checkpoint；新请求由 build_goals 要求对应字段。
     person: PersonExtraction | None = None
     relation: RelationExtraction | None = None
+    query_spec: QuerySpec | None = None  # None 用于兼容既有检查点。
 
 
 class IntentBatch(Contract):

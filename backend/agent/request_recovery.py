@@ -4,7 +4,21 @@ from langgraph.types import Command
 
 
 class RecoveryConflict(ValueError):
-    """会话中另有未结束任务，或者恢复所需的检查点已丢失。"""
+    """会话忙、检查点丢失或模式版本不兼容，不能安全继续原任务。"""
+
+
+def require_runnable_strategy(state: dict) -> None:
+    """执行/恢复前校验被冻结的版本，不能用当前配置覆盖历史任务。
+
+    缓存的最终响应可以读取，但旧版 Direct 的待执行节点、中断和 WAIT 不能重放。
+    停止任务使用独立取消链路，不恢复业务节点，因此仍可停止旧任务。
+    """
+    from backend.agent.contracts import ModelBusinessValidationError
+    from backend.agent.strategies.contracts import require_supported_strategy
+    try:
+        require_supported_strategy(state)
+    except ModelBusinessValidationError as exc:
+        raise RecoveryConflict(exc.feedback) from exc
 
 
 def interrupted_state(snapshot) -> dict:
@@ -35,6 +49,16 @@ def run_or_recover(graph, config: dict, initial_state: dict, *, is_retry: bool,
     values = snapshot.values or {}
     request_id = initial_state["request_id"]
     same_request = values.get("request_id") == request_id
+    interrupted = interrupted_state(snapshot)
+    pending = interrupted["__interrupt__"]
+    if same_request and not snapshot.next and not pending and values.get("execution_decision") != "WAIT":
+        # 图已完成、HTTP 响应尚未保存也属于可复用终态；只读结果无需运行旧版本。
+        return dict(values)
+    # 必须在 invoke(None) / Command(resume=...) / WAIT 重入之前检查。
+    # 只在图入口检查不够：恢复可以直接跳到检查点保存的任意节点。
+    require_runnable_strategy(initial_state)
+    if same_request:
+        require_runnable_strategy(values)
 
     if not same_request:
         if snapshot.next or values.get("execution_decision") == "WAIT":
@@ -45,8 +69,6 @@ def run_or_recover(graph, config: dict, initial_state: dict, *, is_retry: bool,
         # 首次 invoke 前即失败的请求没有执行过任何工具，可安全重新从入口开始。
         return graph.invoke(initial_state, config=config)
 
-    interrupted = interrupted_state(snapshot)
-    pending = interrupted["__interrupt__"]
     if pending:
         answers = {}
         if find_answer is not None:
