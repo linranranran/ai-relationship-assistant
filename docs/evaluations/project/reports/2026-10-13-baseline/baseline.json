@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "evaluated_at": "2026-10-13T23:46:55.267601+08:00",
+  "scope": "existing_regression_only",
+  "environment": "external endpoints isolated; Langfuse disabled",
+  "git_commit": "31fc018441e70b78be6ce90a70d973ca776273ab",
+  "working_tree_dirty": true,
+  "backend_source_sha256": "9de87f0e0a3f31c4213cb8a390f7a9bec880be123f16a986aabb4b5a4267e405",
+  "framework_versions": {
+    "langgraph": "1.2.12",
+    "langchain-openai": "1.6.7",
+    "langfuse": "4.15.3"
+  },
+  "configured_model": {
+    "host": "ws-c8r74t7notxa7ute.cn-beijing.maas.aliyuncs.com",
+    "model": "qwen3.5-plus",
+    "used_in_this_report": false
+  },
+  "backend_regression": {
+    "executed": 30,
+    "passed": 30,
+    "failed": 0,
+    "suite_seconds": 0.087,
+    "raw_log": "backend-unittest.txt"
+  },
+  "frontend_regression": {
+    "executed": 3,
+    "passed": 3,
+    "failed": 0,
+    "raw_log": "frontend-node-test.txt"
+  },
+  "paid_model_scenarios_executed": 0,
+  "agent_business_success_rate": null,
+  "sales_semantic_accuracy": null,
+  "pending_evaluation": {
+    "unique_scenarios_planned": 47,
+    "live_graph_runs_planned_max": 69,
+    "model_requests_proposed_max": 360,
+    "authorization": "pending; previous 8-call authorization exhausted"
+  },
+  "limits": [
+    "Regression pass counts are not agent task success or factual accuracy.",
+    "No paid model, real business database, throughput, or complete API/SSE benchmark in this report.",
+    "No baseline-vs-change experiment, production data, or sales business impact."
+  ]
+}

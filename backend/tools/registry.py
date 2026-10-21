@@ -10,6 +10,7 @@ from backend.tools.person import add_person, update_person, delete_person, find_
 from backend.tools.relation import add_relation, update_relation, delete_relation
 from backend.tools.query import query_relation_path, get_person_detail, list_relations
 from backend.tools.kinship import get_kinship_title
+from backend.tools.sales import get_sales_preparation_context
 from backend.tools.schema.tool_args import (
     AddPersonArgs,
     AddRelationArgs,
@@ -22,9 +23,11 @@ from backend.tools.schema.tool_args import (
     QueryRelationPathArgs,
     UpdatePersonArgs,
     UpdateRelationArgs,
+    GetSalesPreparationContextArgs,
 )
 
 TOOL_REGISTRY = {
+    "get_sales_preparation_context": get_sales_preparation_context,
     "add_person": add_person,
     "update_person": update_person,
     "delete_person": delete_person,
@@ -39,6 +42,7 @@ TOOL_REGISTRY = {
 }
 
 TOOL_ARGUMENT_MODELS = {
+    "get_sales_preparation_context": GetSalesPreparationContextArgs,
     "add_person": AddPersonArgs,
     "update_person": UpdatePersonArgs,
     "delete_person": DeletePersonArgs,

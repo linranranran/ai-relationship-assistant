@@ -15,7 +15,8 @@
 .chat-app button { cursor: pointer; }
 .chat-app button:disabled { cursor: not-allowed; opacity: .48; }
 .chat-app button:focus-visible, .chat-brand:focus-visible { outline: 3px solid #aac3fb; outline-offset: 3px; }
-.chat-sidebar { width: 254px; flex-shrink: 0; display: flex; flex-direction: column; padding: 30px 20px 18px; background: #fff; border-right: 1px solid var(--chat-line); }
+/* 导入面板增加了侧栏内容；短屏允许侧栏独立滚动，账号与操作入口不会被挤出屏幕。 */
+.chat-sidebar { width: 254px; flex-shrink: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 30px 20px 18px; background: #fff; border-right: 1px solid var(--chat-line); }
 .chat-brand { display: flex; align-items: center; gap: 12px; color: var(--chat-ink); text-decoration: none; margin: 0 4px 44px; }
 .chat-brand-icon { width: 42px; height: 42px; display: grid; place-items: center; color: #fff; background: var(--chat-blue); border-radius: 13px; box-shadow: 0 5px 12px #3567dc24; }
 .chat-brand strong { display: block; font-size: 18px; letter-spacing: 1px; }

@@ -16,6 +16,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from backend.sales.contracts import SalesPreparationResult
 
 
 PHONE_PATTERN = r"^1[3-9]\d{9}$"
@@ -37,6 +38,8 @@ class ChatRequest(StrictRequest):
     """Agent request. User identity always comes from the bearer token."""
 
     message: ChatMessage = Field(description="用户输入的消息")
+    # 显式入口要求什么结果，不能被模型忽略；默认值兼容全部旧请求。
+    response_kind: Literal["chat", "sales_preparation"] = "chat"
 
 
 class ResumeAgentRequest(StrictRequest):
@@ -113,6 +116,7 @@ class ClarificationPrompt(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    sales_preparation: Optional[SalesPreparationResult] = None
     # COMPLETED 是请求生命周期终态，不等于自然语言要求全部通过业务验收。
     completion_basis: Optional[str] = Field(default=None, description="完成依据；Direct 为模型停止并有工具回执")
     requirements_verified: Optional[bool] = Field(default=None, description="是否已逐项核验需求；无 goal 的 Direct 固定为 false")
@@ -141,6 +145,7 @@ class ChatResponse(BaseModel):
 
 
 class ChatHistoryMessage(BaseModel):
+    sales_preparation: Optional[SalesPreparationResult] = None
     message_id: str
     request_id: str
     role: Literal["user", "assistant"]
@@ -149,6 +154,7 @@ class ChatHistoryMessage(BaseModel):
 
 
 class ChatHistoryPending(BaseModel):
+    response_kind: Literal["chat", "sales_preparation"] = "chat"
     request_id: str
     message: str
     created_at: datetime

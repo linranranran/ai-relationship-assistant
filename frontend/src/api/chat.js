@@ -18,8 +18,8 @@ const resumeTimeoutMs = timeoutMs(
 
 export const createRequestId = () => crypto.randomUUID()
 
-export const sendMessage = (message, requestId) =>
-  api.post('/chat', buildChatPayload(message), {
+export const sendMessage = (message, requestId, responseKind = 'chat') =>
+  api.post('/chat', buildChatPayload(message, responseKind), {
     headers: { 'Idempotency-Key': requestId },
     timeout: chatTimeoutMs,
   })

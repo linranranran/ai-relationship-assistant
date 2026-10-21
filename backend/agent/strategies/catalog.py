@@ -11,10 +11,18 @@ from backend.tools.definitions import ALL_TOOL_DEFINITIONS
 # 输入 Schema 说明“怎么调用”，返回契约说明“下一步怎么引用”。不说明后者，
 # 模型容易把唯一人物误当候选数组，生成 data.0.id 而浪费一次查库/重规划。
 OUTPUT_DESCRIPTIONS = {
+    "get_sales_preparation_context": " 成功：data 为已授权的 person_id/as_of/sources/coverage；这些是有限证据快照，不能据此修改客户，不是完成的准备单。",
     "find_person": " 唯一命中：success=true,data={id,name,...}，ID 引用为 data.id，绝不是 data.0.id；多候选为 AMBIGUOUS，需用户选择。",
     "get_person_detail": " 成功：data={person:{id,name,...},relations:[...]}，人物字段位于 data.person。",
     "query_relation_path": " 成功：data 为路径步骤列表，可整体传给 get_kinship_title 的 relation_path。",
 }
+
+# Function Calling 是“建议执行”，不是用户授权。说明这一点可以避免模型
+# 用普通聊天询问“是否确认”，却没有提交工具，导致系统无法生成正式 interrupt。
+CONFIRMATION_DESCRIPTION = (
+    " 调用此工具表示提交操作建议；系统会在实际执行前生成用户确认中断。"
+    "请先提交工具调用，不要用普通回复替代确认，不要等待或生成 confirmed 参数。"
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +44,10 @@ class ToolCatalog:
         这里不能再使用 intent 白名单，也不从模型参数接受工具权限。未来接入角色
         权限时在此交集过滤能力；当前并没有实现 RBAC，不宣称角色级授权。
         """
+        if state.get("response_kind") == "sales_preparation":
+            # 这是显式产品入口的能力边界，不是重新引入 goal/意图层。
+            # 只在目录中过滤还不够，validate_direct_call 会在执行前再次防御。
+            return ToolCatalog.snapshot({"find_person", "get_person_detail", "get_sales_preparation_context"})
         return ToolCatalog.snapshot()
 
     @staticmethod
@@ -48,7 +60,8 @@ class ToolCatalog:
     def snapshot(allowed=None) -> CatalogSnapshot:
         descriptions = {d["function"]["name"]: d["function"].get("description", "") for d in ALL_TOOL_DEFINITIONS}
         names = set(TOOL_ARGUMENT_MODELS) if allowed is None else set(allowed)
-        tools = {name: {"name": name, "description": descriptions.get(name, name) + OUTPUT_DESCRIPTIONS.get(name, ""),
+        tools = {name: {"name": name, "description": descriptions.get(name, name) + OUTPUT_DESCRIPTIONS.get(name, "")
+                        + (CONFIRMATION_DESCRIPTION if name in HIGH_RISK_TOOLS else ""),
                         "risk": "confirmation_required" if name in HIGH_RISK_TOOLS else "write" if name.startswith(("add_", "update_")) else "read",
                         "parameters": TOOL_ARGUMENT_MODELS[name].model_json_schema()}
                  for name in sorted(names) if name in TOOL_ARGUMENT_MODELS}

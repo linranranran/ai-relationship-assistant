@@ -74,7 +74,10 @@ def validate_business_scope(state, calls, bindings):
                 raise ModelBusinessValidationError("UNVERIFIED_RELATION_PATH", "先查询目标人物的真实关系路径，称谓工具只能使用该查询结果。")
         if tool == "add_relation":
             rel = relations[0]
-            a, b = bindings["people"].get(rel.get("person"), set()), bindings["people"].get(rel.get("related_to"), set())
+            # Extraction 的 person 是角色持有者；related_to 是被描述的人。
+            # “张建国是杨鑫的上司”：person=张、related_to=杨，物理边为杨→张。
+            # 校验器必须和图存储/Tool Schema 共用这个语义，不能拒绝正确计划。
+            a, b = bindings["people"].get(rel.get("related_to"), set()), bindings["people"].get(rel.get("person"), set())
             av = state.get("self_person_id") if args.get("from_person_id") == "@self" else args.get("from_person_id")
             bv = state.get("self_person_id") if args.get("to_person_id") == "@self" else args.get("to_person_id")
             direct = len(a) == len(b) == 1 and av in a and bv in b

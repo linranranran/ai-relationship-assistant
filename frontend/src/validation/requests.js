@@ -40,8 +40,10 @@ export function validateChatMessage(message) {
   return { valid: true, error: '' }
 }
 
-export function buildChatPayload(message) {
+export function buildChatPayload(message, responseKind = 'chat') {
   const validation = validateChatMessage(message)
   if (!validation.valid) throw new Error(validation.error)
-  return { message: String(message).trim() }
+  if (!['chat', 'sales_preparation'].includes(responseKind)) throw new Error('不支持的回复类型')
+  // 普通聊天保持旧请求形状；明确准备入口额外传期望产物，避免模型跳过取证。
+  return { message: String(message).trim(), ...(responseKind === 'chat' ? {} : { response_kind: responseKind }) }
 }

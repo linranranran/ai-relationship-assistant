@@ -253,7 +253,12 @@ def direct_finish(state: AgentState) -> Command:
                 **update,
                 "completion_basis": "SYSTEM_STOP",
                 "response": _stopped_response(state, records),
-                "execution_decision": "CANCELLED" if state.get("execution_decision") == "CANCELLED" else "PARTIALLY_COMPLETED",
+                "execution_decision": ("CANCELLED" if state.get("execution_decision") == "CANCELLED" else
+                                       "FAILED" if state.get("response_kind") == "sales_preparation" else "PARTIALLY_COMPLETED"),
+                # 只读准备的系统停止也没有待恢复写操作；同样解除本次准备占用。
+                **({"completion_basis": "SALES_VALIDATION_FAILED", "response_retryable": False}
+                   if state.get("response_kind") == "sales_preparation"
+                   and state.get("execution_decision") != "CANCELLED" else {}),
             },
             goto="finalize_memory",
         )

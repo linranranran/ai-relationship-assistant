@@ -10,7 +10,7 @@ from uuid import uuid4
 from psycopg.types.json import Jsonb
 
 from backend.agent.request_idempotency import hash_request_message
-from backend.config import AGENT_RUN_LEASE_SECONDS, AGENT_QUEUE_LIMIT, AGENT_EVENT_RETENTION
+from backend.config import AGENT_RUN_LEASE_SECONDS, AGENT_QUEUE_LIMIT, AGENT_EVENT_RETENTION, AGENT_TOOL_STRATEGY
 from backend.db.postgres_client import get_postgres_connection
 
 
@@ -68,9 +68,9 @@ def _create_run(connection, owner_id, request_id, action, interrupt_id=None):
     return dict(_latest(connection, owner_id, request_id))
 
 
-def accept_chat(owner_id, request_id, thread_id, message, user_context):
+def accept_chat(owner_id, request_id, thread_id, message, user_context, *, response_kind="chat"):
     """提交完成才返回 202；Web 重启后仍可按原 run_id 从检查点继续。"""
-    message_hash = hash_request_message(message)
+    message_hash = hash_request_message(message, response_kind)
     with get_postgres_connection() as connection:
         # Admission 短锁只串行化同一会话的受理，不持锁等待模型。
         connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 7))", (thread_id,))
@@ -79,12 +79,16 @@ def accept_chat(owner_id, request_id, thread_id, message, user_context):
                            (owner_id, request_id))
         existing = _latest(connection, owner_id, request_id)
         if existing:
-            if existing["message_hash"] != message_hash:
+            if (existing["message_hash"] != message_hash
+                    or existing["input"].get("response_kind", "chat") != response_kind):
                 raise TaskConflict("request_id 已用于另一条消息")
             if existing["status"] != "failed":
                 return dict(existing)
             # 失败重试换 run_id，保留 request_id、原始输入和全部 Tool call_id。
             return _create_run(connection, owner_id, request_id, "CHAT")
+        # 已存在的结果仍可读取；新请求则不能在 Plan/Discovery 下静默降级。
+        if response_kind == "sales_preparation" and AGENT_TOOL_STRATEGY != "direct":
+            raise TaskConflict("沟通准备目前只支持 Direct 模式，请调整服务端配置后重试")
         busy = connection.execute(
             "SELECT 1 FROM agent_task t JOIN agent_run r ON r.run_id = t.current_run_id "
             "WHERE t.thread_id = %s AND r.status IN ('queued','running','waiting','failed') LIMIT 1",
@@ -98,7 +102,7 @@ def accept_chat(owner_id, request_id, thread_id, message, user_context):
         connection.execute(
             "INSERT INTO agent_task (owner_id, request_id, thread_id, message_hash, input) VALUES (%s,%s,%s,%s,%s)",
             (owner_id, request_id, thread_id, message_hash,
-             Jsonb({"message": message, "current_user": user_context})))
+             Jsonb({"message": message, "response_kind": response_kind, "current_user": user_context})))
         return _create_run(connection, owner_id, request_id, "CHAT")
 
 
@@ -204,21 +208,32 @@ def finish_run(run, response):
         # WAIT 是图已主动结束的可重试状态，当前批次没有后台任务继续执行。
         response = {**response, "status": "FAILED",
                     "response": "工具暂被其他执行者占用，请稍后使用原请求重试。"}
-    status = response["status"]
-    run_status, event_type = {
-        "COMPLETED": ("completed", "request.completed"),
-        "PARTIALLY_COMPLETED": ("completed", "request.completed"),
-        "BUDGET_EXCEEDED": ("completed", "request.completed"),
-        "CANCELLED": ("cancelled", "request.cancelled"),
-        "CONFIRMATION_REQUIRED": ("waiting", "interaction.required"),
-        "CLARIFICATION_REQUIRED": ("waiting", "interaction.required"),
-    }.get(status, ("failed", "request.failed"))
+    run_status, event_type = _run_outcome(response)
     with get_postgres_connection() as connection:
         _fence(connection, run)
         _event(connection, run["owner_id"], run["request_id"], run["run_id"], event_type,
                message=response["response"], payload={"response": response})
         connection.execute("UPDATE agent_run SET status=%s, response=%s, finished_at=CURRENT_TIMESTAMP "
                            "WHERE run_id=%s", (run_status, Jsonb(response), run["run_id"]))
+
+
+def _run_outcome(response):
+    """对外业务结果与内部执行生命周期分开。
+
+    准备单校验失败是已结束的业务失败，保留 public FAILED，但解除 admission；
+    系统错误/执行结果未知仍为 failed，保留原请求供恢复。不能用 retryable=False
+    一刀切：账户配置错误也可能需要修复后继续原请求。
+    """
+    if response["status"] == "FAILED" and response.get("completion_basis") == "SALES_VALIDATION_FAILED":
+        return "completed", "request.completed"
+    return {
+        "COMPLETED": ("completed", "request.completed"),
+        "PARTIALLY_COMPLETED": ("completed", "request.completed"),
+        "BUDGET_EXCEEDED": ("completed", "request.completed"),
+        "CANCELLED": ("cancelled", "request.cancelled"),
+        "CONFIRMATION_REQUIRED": ("waiting", "interaction.required"),
+        "CLARIFICATION_REQUIRED": ("waiting", "interaction.required"),
+    }.get(response["status"], ("failed", "request.failed"))
 
 
 def pending_runs(limit=4, excluded=()):

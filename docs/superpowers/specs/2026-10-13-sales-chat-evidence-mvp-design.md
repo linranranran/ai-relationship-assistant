@@ -1,6 +1,6 @@
 # 模拟客户聊天与销售沟通准备：面试 MVP 设计
 
-更新日期：2026-10-13。状态：待实施；本文中的新表、接口、模块和页面均未实现。
+更新日期：2026-10-13。状态：核心代码与页面已实现，开发库迁移已执行；真实模型的完整主线仍有结构解析失败，不能宣称稳定验收。实际验证范围见 [验收记录](../../evaluations/sales-preparation/acceptance.md)。
 
 ## 1. 目标与取舍
 
@@ -75,7 +75,7 @@ prepare_context → direct_decide → direct_validate
 `SalesPreparationBrief` 包含客户背景 `customer_summary`、近期沟通 `recent_communications`、需求 `customer_needs`、上次约定 `previous_commitments`、建议问题 `suggested_questions`、建议开场 `suggested_opening`、信息缺口 `missing_information`、限制 `limitations`。
 
 - 事实项 `FactItem(text, evidence_refs)`，引用 `EvidenceRef(source_id, quote)` 至少一条；表达为“记录中客户表示……”，不升级为独立核实的事实。
-- 约定项 `CommitmentItem` 增加 `completion_state=OPEN / DONE / UNKNOWN`。明确未完成/完成才使用 OPEN/DONE；没有完成记录用 UNKNOWN。
+- 约定项 `CommitmentItem` 增加 `completion_state=OPEN / DONE / UNKNOWN`。明确未完成/完成才使用 OPEN/DONE；没有完成记录用 UNKNOWN。实施时补充 `status_evidence_refs`：承诺证据放在 `evidence_refs`，OPEN/DONE 另需非空状态证据，避免把“我将发送”当成已发送的依据。引用存在仍不能自动证明状态判断正确。
 - 建议项 `RecommendationItem(text, basis_refs)` 与事实分开。一般提问可无引用；个性化建议附依据，不承诺未知产品能力。
 - 校验人物一致、来源属于本次上下文、quote 非空且为对应 excerpt 的原文片段。合法引用不等于结论在语义上成立；转述、否定和冲突需人工验收。
 - 生成只使用当前需求、必要澄清与本次证据；会话摘要、长期记忆可辅助人物解析，不能成为无来源的准备单事实。

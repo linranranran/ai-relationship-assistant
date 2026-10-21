@@ -39,6 +39,7 @@ STAGE_LABELS = {
     "finalize_memory": "保存本轮聊天记录",
 }
 TOOL_LABELS = {
+    "get_sales_preparation_context": "读取客户聊天与档案证据",
     "find_person": "查询人物", "get_person_detail": "查询人物资料",
     "list_relations": "查询关系记录", "query_relation_path": "查询关系路径",
     "get_kinship_title": "计算亲属称谓", "add_person": "新增人物",

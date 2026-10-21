@@ -223,6 +223,21 @@ LIST_RELATIONS_TOOL = {
 
 # 所有工具定义列表（会传给 LLM）
 ALL_TOOL_DEFINITIONS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_sales_preparation_context",
+            "description": "为下一次联系客户准备沟通：先查找并确认客户 ID，再调用本只读工具读取档案与模拟聊天证据。成功后可结束工具循环，由回复节点生成带引用的准备单；没有聊天不是失败，但必须说明资料不足。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "person_id": {"type": "string", "description": "真实查询或澄清返回的客户 ID"},
+                    "meeting_goal": {"type": "string", "description": "本次沟通目的"},
+                },
+                "required": ["person_id", "meeting_goal"],
+            },
+        },
+    },
     ADD_PERSON_TOOL,
     UPDATE_PERSON_TOOL,
     DELETE_PERSON_TOOL,

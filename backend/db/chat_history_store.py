@@ -45,11 +45,15 @@ def load_chat_history(*, owner_id: str, conversation_id: str,
                 raise HistoryCursorError("历史记录游标已失效，请重新加载")
             cursor_id = anchor["id"]
         rows = connection.execute(
-            "SELECT id, message_id, request_id, role, content, create_time "
-            "FROM conversation_message WHERE owner_id=%s AND conversation_id=%s "
-            "AND role IN ('user','assistant') "
-            + ("AND id < %s " if cursor_id is not None else "")
-            + "ORDER BY id DESC LIMIT %s",
+            # 一次查询关联最终 JSONB 响应，避免给每条消息单独查准备单。
+            # owner + request 双重连接，只给助手消息附卡片；旧响应允许为空。
+            "SELECT m.id,m.message_id,m.request_id,m.role,m.content,m.create_time, "
+            "CASE WHEN m.role='assistant' THEN r.response->'sales_preparation' END AS sales_preparation "
+            "FROM conversation_message m LEFT JOIN agent_request r "
+            "ON r.owner_id=m.owner_id AND r.request_id=m.request_id "
+            "WHERE m.owner_id=%s AND m.conversation_id=%s AND m.role IN ('user','assistant') "
+            + ("AND m.id < %s " if cursor_id is not None else "")
+            + "ORDER BY m.id DESC LIMIT %s",
             (owner_id, conversation_id, *([cursor_id] if cursor_id is not None else []), limit + 1),
         ).fetchall()
         # 首屏同步查出尚未结束的任务：换浏览器后没有 localStorage，也能重新订阅。
@@ -58,6 +62,7 @@ def load_chat_history(*, owner_id: str, conversation_id: str,
         if before is None:
             row = connection.execute(
                 "SELECT t.request_id, t.input->>'message' AS message, "
+                "t.input->>'response_kind' AS response_kind, "
                 "t.created_at, r.run_id, r.status, r.response "
                 "FROM agent_task t JOIN agent_run r ON r.run_id=t.current_run_id "
                 "WHERE t.owner_id=%s AND t.thread_id=%s "
@@ -71,6 +76,7 @@ def load_chat_history(*, owner_id: str, conversation_id: str,
         "messages": [
             {"message_id": row["message_id"], "request_id": row["request_id"],
              "role": row["role"], "content": row["content"], "created_at": row["create_time"]}
+             | {"sales_preparation": row.get("sales_preparation")}
             for row in reversed(visible)
         ],
         "has_more": has_more,

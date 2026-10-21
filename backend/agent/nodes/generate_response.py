@@ -22,6 +22,10 @@ def generate_response(state: AgentState) -> Command:
 
     from backend.agent.strategies.contracts import is_request_direct
     if is_request_direct(state):
+        sales = _sales_response(state)
+        if sales is not None:
+            return sales
+    if is_request_direct(state):
         import json
         from backend.agent.direct_runtime import direct_records
         prompt = (
@@ -121,3 +125,41 @@ def generate_response(state: AgentState) -> Command:
             else "PARTIALLY_COMPLETED"
         )
     return Command(update=update, goto="finalize_memory")
+
+
+def _sales_response(state: AgentState) -> Command | None:
+    """销售分支的入口：成功回执是依据，不以模型的回答草稿替代证据。
+
+    普通聊天调用了销售上下文 Tool 也可生成卡片；显式准备入口没取到证据
+    必须失败。异常只捕获业务/结构错误，预算耗尽等控制信号交给原图收尾。
+    """
+    from backend.agent.direct_runtime import direct_records
+    from backend.agent.contracts import ModelBusinessValidationError, StructuredOutputError
+    from backend.sales.evidence import context_from_records
+    from backend.sales.preparation import prepare_sales_brief, render_sales_brief
+    from pydantic import ValidationError
+
+    records = direct_records(state)
+    requested = state.get("response_kind") == "sales_preparation"
+    if not requested and not any(record.get("tool") == "get_sales_preparation_context" for record in records):
+        return None
+    try:
+        context = context_from_records(records)
+        if context is None:
+            raise ModelBusinessValidationError("SALES_CONTEXT_MISSING", "尚未取得可用客户证据，无法生成准备单。")
+        emit_progress("strategy.deciding", node="generate_response", message="根据客户聊天证据生成并校验沟通准备")
+        question = state["user_input"]
+        if state.get("direct_clarifications"):
+            question += "\n用户补充：" + "；".join(state["direct_clarifications"])
+        result = prepare_sales_brief(context=context, user_input=question)
+        response = render_sales_brief(result)
+    except (ModelBusinessValidationError, StructuredOutputError, ValidationError) as exc:
+        # 不发布不可信的草稿；FAILED 与请求已结束不是同一个概念。
+        return Command(update={"response": getattr(exc, "feedback", "准备单未通过结构或引用校验，请结束本次任务后重新生成。"),
+                               "sales_preparation": None, "execution_decision": "FAILED",
+                               "response_error_code": getattr(exc, "code", "SALES_OUTPUT_INVALID"),
+                               "response_retryable": False, "completion_basis": "SALES_VALIDATION_FAILED",
+                               "requirements_verified": False}, goto="finalize_memory")
+    return Command(update={"response": response, "sales_preparation": result.model_dump(mode="json"),
+                           "execution_decision": "AGENT_FINISHED", "completion_basis": "VALIDATED_SALES_BRIEF",
+                           "requirements_verified": False}, goto="finalize_memory")

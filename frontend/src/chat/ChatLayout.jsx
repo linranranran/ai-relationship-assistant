@@ -1,6 +1,7 @@
 import { Button, Loading } from 'tdesign-react'
 import ChatIcon from './ChatIcon'
 import ChatMessage from './ChatMessage'
+import ChatImportPanel from '../sales/ChatImportPanel'
 import { QUICK_PROMPTS } from './messages'
 import { MAX_CHAT_MESSAGE_LENGTH } from '../validation/requests'
 
@@ -30,6 +31,7 @@ export default function ChatLayout({ user, messages, view, scrollRef, bottomRef,
             <ChatIcon name={prompt.icon} size={18} /><span>{prompt.title}</span><span className="chat-prompt-arrow">↗</span>
           </button>)}
         </div>
+        <ChatImportPanel busy={view.busy || Boolean(view.pendingRequest)} onPrepare={actions.prepareSales} />
         <div className="chat-sidebar-note"><ChatIcon name="history" size={19} />
           <strong>对话不会因刷新丢失</strong><p>历史问答会保存在你的账号下，随时回来继续梳理。</p>
         </div>
@@ -53,6 +55,9 @@ export default function ChatLayout({ user, messages, view, scrollRef, bottomRef,
             <button className="chat-mobile-logout" onClick={actions.logout} aria-label="退出登录"><ChatIcon name="logout" size={18} /></button>
           </div>
         </header>
+        <details className="sales-import-mobile"><summary>客户聊天导入与沟通准备</summary>
+          <ChatImportPanel busy={view.busy || Boolean(view.pendingRequest)} onPrepare={actions.prepareSales} />
+        </details>
         <main className="chat-scroll" ref={scrollRef} onScroll={actions.scroll} aria-label="聊天记录">
           <div className="chat-timeline">
             {view.historyLoading && <div className="chat-history-loading"><Loading size="small" text="正在加载你的聊天记录…" /></div>}

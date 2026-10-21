@@ -7,6 +7,7 @@ Tool 真正接受的 ``confirmed=True``。
 from backend.db import neo4j_client
 from copy import deepcopy
 from typing import Any
+import json
 from pydantic import ValidationError
 from backend.common import common_tool
 from backend.tools.registry import TOOL_ARGUMENT_MODELS,TOOL_REGISTRY
@@ -16,9 +17,12 @@ from backend.agent.tool_dependencies import (
     collect_reference_steps,
 )
 
-# 第一版只保护删除操作。以后增加“批量修改、合并人物、发送消息”等能力时，
-# 只需要在这里扩展白名单，不要把判断散落到 prompt 和各个节点中。
-HIGH_RISK_TOOLS = frozenset({"delete_person", "delete_relation"})
+# 更新与删除采用共同确认策略，避免同一个用户操作在不同模式下绕过二次确认。
+# 新增的免确认范围仍由各模式的原有业务策略控制，没有扩大模型的写权限。
+HIGH_RISK_TOOLS = frozenset({"update_person", "update_relation", "delete_person", "delete_relation"})
+# 执行器批准操作与底层 Tool 接口是两回事。只有删除函数接受 confirmed 参数；
+# 更新函数的授权在执行器检查，不能将该内部标志传成一个待更新的人物字段。
+CONFIRMED_ARGUMENT_TOOLS = frozenset({"delete_person", "delete_relation"})
 
 # 这些参数属于服务端信任边界，大模型即使生成了也必须丢弃。
 MODEL_FORBIDDEN_ARGUMENTS = frozenset(
@@ -141,7 +145,23 @@ def build_confirmation_request(tool_calls: list[dict] ,owner_id:str) -> dict:
     summary_parts: list[str] = []
     for call in risky_calls:
         args = call.get("args", {})
-        if call["tool"] == "delete_person":
+        if call["tool"] == "update_person":
+            person_name = args.get("person_id", "未知人物")
+            with neo4j_client.get_neo4j_driver() as driver:
+                detail = neo4j_client.get_person_detail(driver, person_name, owner_id)
+            if detail:
+                person_name = detail.get("person", {}).get("name", person_name)
+            changes = {key: value for key, value in args.items() if key not in {"person_id", "confirmed"}}
+            # 显示真实字段和值。[] 是明确清空，不能因“空值”而从确认摘要中删除。
+            summary_parts.append(f"修改人物 {person_name}：{json.dumps(changes, ensure_ascii=False)}")
+        elif call["tool"] == "update_relation":
+            relation_id = args.get("relation_id", "未知关系")
+            with neo4j_client.get_neo4j_driver() as driver:
+                relation = neo4j_client.get_relation_by_id(driver, relation_id, owner_id)
+            label = f"{relation.get('from_name', '?')} → {relation.get('to_name', '?')}" if relation else relation_id
+            changes = {key: value for key, value in args.items() if key not in {"relation_id", "confirmed"}}
+            summary_parts.append(f"修改关系 {label}：{json.dumps(changes, ensure_ascii=False)}")
+        elif call["tool"] == "delete_person":
             person_name = args.get('person_id')
             relation_count = 0
             if args.get('person_id', None) is not None:

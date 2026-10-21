@@ -191,7 +191,9 @@ def evaluate_goal(spec: GoalCompletionSpec, records: list[dict], bindings: dict)
         return GoalEvaluation(CompletionStatus.PENDING, missing_requirements=("人物属性保存回执",))
     relation_tools = {"ADD_RELATION": "add_relation", "UPDATE_RELATION": "update_relation", "DELETE_RELATION": "delete_relation"}
     if spec.intent in relation_tools:
-        names = [spec.relation.get("person"), spec.relation.get("related_to")]
+        # A-[角色]->B 表示 B 是 A 的角色；抽取字段 person 指 B，related_to 指 A。
+        # 验收必须核对同一物理方向，不能因为双方姓名正确就认可反向的上司/客户边。
+        names = [spec.relation.get("related_to"), spec.relation.get("person")]
         endpoints = [people.get(n, set()) for n in names]
         for r in reversed(successes):
             if r.get("tool") != relation_tools[spec.intent]:

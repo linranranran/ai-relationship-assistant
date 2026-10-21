@@ -20,7 +20,7 @@ from backend.agent.tracing import trace_event
 from backend.agent.audit import audit_tool, record_tool_result
 from backend.agent.streaming import check_execution, emit_progress, ExecutionCancelled, TOOL_LABELS
 
-from backend.agent.confirmation import HIGH_RISK_TOOLS, build_confirmation_request
+from backend.agent.confirmation import HIGH_RISK_TOOLS, CONFIRMED_ARGUMENT_TOOLS, build_confirmation_request
 from backend.agent.execution_enums import ExecutionClaimAction, ToolStepStatus
 from backend.agent.execution_policy import ToolErrorCode, parse_tool_error_code
 from backend.agent.state import AgentState
@@ -269,7 +269,7 @@ def _runtime_args(state: AgentState, call: dict, resolved_args: dict) -> dict:
     runtime = dict(resolved_args)
     # Direct 的新增/更新确认位只用于执行器授权，这些 Tool 函数并不接受 confirmed。
     # 删除工具原本接受该标记，继续按现有接口传入。
-    if call["tool"] not in HIGH_RISK_TOOLS:
+    if call["tool"] not in CONFIRMED_ARGUMENT_TOOLS:
         runtime.pop("confirmed", None)
     runtime["owner_id"] = state["user_id"]
     if call["tool"] in BUSINESS_IDEMPOTENT_TOOLS:

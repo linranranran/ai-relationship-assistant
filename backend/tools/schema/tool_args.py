@@ -13,6 +13,14 @@ class ToolArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+class GetSalesPreparationContextArgs(ToolArgs):
+    """模型只指定已查到的客户 ID 和沟通目的，owner 由执行器注入。"""
+
+    person_id: str = Field(min_length=1, max_length=128)
+    meeting_goal: str = Field(min_length=1, max_length=500,
+                             description="本次联系客户的目的；缺少具体目的可填写常规沟通准备")
+
+
 class AddPersonArgs(ToolArgs):
     name: str = Field(min_length=1, max_length=100)
     gender: Literal["男", "女", "未知"] = "未知"
@@ -50,9 +58,13 @@ class DeletePersonArgs(ToolArgs):
 
 
 class AddRelationArgs(ToolArgs):
-    from_person_id: str = Field(min_length=1, max_length=128)
-    to_person_id: str = Field(min_length=1, max_length=128)
-    relation_type: str = Field(min_length=1, max_length=100)
+    # 模型看到的是 Pydantic 生成的真实 tools Schema；不能仅在代码注释中说明。
+    from_person_id: str = Field(min_length=1, max_length=128,
+        description="关系起点 A。A-[关系类型]->B 表示 B 是 A 的该关系角色。例如甲是乙的上司，应以乙为起点。")
+    to_person_id: str = Field(min_length=1, max_length=128,
+        description="关系终点 B，即承担关系角色的人。例如甲是乙的上司，应以甲为终点。")
+    relation_type: str = Field(min_length=1, max_length=100,
+        description="终点人物相对起点人物的角色；B 是 A 的父亲/客户/上司等。")
     through_person_id: str | None = Field(default=None, max_length=128)
     note: str | None = Field(default=None, max_length=2000)
 

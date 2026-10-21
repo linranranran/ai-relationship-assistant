@@ -122,6 +122,7 @@ export default function Chat() {
       localStorage.setItem(pendingStorageKey, JSON.stringify({
         text: pending.text,
         requestId: pending.requestId,
+        responseKind: pending.responseKind || 'chat',
         statusCheck: true,
       }))
       setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
@@ -133,10 +134,20 @@ export default function Chat() {
     }
 
     if (data.status === 'FAILED') {
+      if (data.completion_basis === 'SALES_VALIDATION_FAILED') {
+        // 已结束的准备校验失败不需要恢复同一请求。后端 admission 也已释放，
+        // 清除 pending 后可补充资料并发起新请求；系统错误仍保留原请求。
+        localStorage.removeItem(pendingStorageKey)
+        setMessages((previous) => mergeMessages(clearPendingPrompts(previous), [
+          makeMessage('assistant', data.response, pending.requestId),
+        ]))
+        return
+      }
       // failed 是可恢复状态；查询失败结果后仍保留原 request_id 和原提问。
       // 后端会从检查点继续，并读取已持久化的人工答案，不能创建一个新任务。
       // retryable=false 表示先处理账户/配置，保留原请求以便修复后恢复，不能丢掉任务。
       const retry = { text: pending.text, requestId: pending.requestId,
+        responseKind: pending.responseKind || 'chat',
         retryable: data.retryable, errorCode: data.error_code, response: data.response }
       localStorage.setItem(pendingStorageKey, JSON.stringify(retry))
       setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
@@ -149,7 +160,7 @@ export default function Chat() {
 
     localStorage.removeItem(pendingStorageKey)
     setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
-      makeMessage('assistant', data.response, pending.requestId),
+      makeMessage('assistant', data.response, pending.requestId, { salesPreparation: data.sales_preparation || null }),
     ]))
   }
 
@@ -159,6 +170,7 @@ export default function Chat() {
     localStorage.setItem(pendingStorageKey, JSON.stringify({
       text: pending.text,
       requestId: pending.requestId,
+      responseKind: pending.responseKind || 'chat',
       statusCheck: true,
     }))
     setMessages((prev) => mergeMessages(clearPendingPrompts(prev), [
@@ -263,7 +275,7 @@ export default function Chat() {
         if (data.pending_request) {
           // 即使换浏览器，也能发现服务端的待处理任务，不依赖旧页面缓存。
           pending = { requestId: data.pending_request.request_id,
-            text: data.pending_request.message, statusCheck: true }
+            text: data.pending_request.message, responseKind: data.pending_request.response_kind || 'chat', statusCheck: true }
           localStorage.setItem(pendingStorageKey, JSON.stringify(pending))
         }
       } catch (error) {
@@ -350,9 +362,10 @@ export default function Chat() {
     }
   }
 
-  const submitRequest = async (text, requestId, appendUserMessage) => {
+  const submitRequest = async (text, requestId, appendUserMessage, responseKind = 'chat') => {
     if (busy) return
-    const pending = { text, requestId }
+    // responseKind 与原提问一起保留；刷新/超时重试不能退回普通聊天。
+    const pending = { text, requestId, responseKind }
     localStorage.setItem(pendingStorageKey, JSON.stringify(pending))
     stickToBottom.current = true
     setAwayFromBottom(false)
@@ -365,7 +378,7 @@ export default function Chat() {
     setSending(true)
 
     try {
-      const res = await sendMessage(text, requestId)
+      const res = await sendMessage(text, requestId, responseKind)
       receiveResponse(res.data, pending)
     } catch (err) {
       const detail = err.response?.data?.detail || '请求超时或网络异常'
@@ -424,7 +437,7 @@ export default function Chat() {
   }
 
   const handleRetry = async (pending) => {
-    await submitRequest(pending.text, pending.requestId, false)
+    await submitRequest(pending.text, pending.requestId, false, pending.responseKind || 'chat')
   }
 
   const handleCheckStatus = async (pending) => {
@@ -561,6 +574,11 @@ export default function Chat() {
       retry: handleRetry, check: handleCheckStatus, resume: submitResume,
       cancel: submitCancel, stop: handleStop, logout: handleLogout,
       prompt: usePrompt, loadOlder, latest: scrollToLatest,
+      prepareSales: (customer) => {
+        if (readPendingRequest(pendingStorageKey)) return MessagePlugin.warning('请先结束或处理当前任务')
+        const text = `我明天要联系${customer.name}，帮我根据客户聊天证据准备一下。`
+        return submitRequest(text, createRequestId(), true, 'sales_preparation')
+      },
       reloadHistory: () => setHistoryReload((version) => version + 1),
       scroll: (event) => {
         const element = event.currentTarget

@@ -53,9 +53,23 @@ def load_agent_request(owner_id: str, request_id: str) -> dict | None:
     return get_agent_request(owner_id, request_id)
 
 
-def hash_request_message(message: str) -> str:
-    """生成消息摘要，阻止同一个 request_id 被换成另一条消息复用。"""
-    return sha256(message.encode("utf-8")).hexdigest()
+def hash_request_message(message: str, response_kind: str = "chat") -> str:
+    """同一 request_id 必须保持提问与期望产物不变。
+
+    chat 沿用旧哈希，升级后原请求仍能重试；准备类型把类型一起签入摘要，
+    防止同一句话换成准备模式却拿到普通聊天的缓存。类型不参与用户身份判断。
+    """
+    if response_kind not in {"chat", "sales_preparation"}:
+        raise ValueError("不支持的回复类型")
+    if response_kind == "chat":
+        return sha256(message.encode("utf-8")).hexdigest()
+    import json
+    payload = json.dumps({"message": message, "response_kind": response_kind},
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    # 非 UTF-8 的二进制域前缀：任何普通消息的 UTF-8 编码都不能产生首字节 FF。
+    # 只加普通字符串前缀不够，用户仍能把该前缀+JSON 作为 chat 消息提交，从而
+    # 与准备类型确定性匹配。旧 chat 哈希保持原样，新类型在不同字节域计算。
+    return sha256(b"\xffsales-preparation-v1\x00" + payload.encode("utf-8")).hexdigest()
 
 
 def claim_agent_request(
@@ -68,9 +82,10 @@ def claim_agent_request(
     strategy_mode: str = "plan",
     strategy_version: str = "1",
     catalog_schema_hash: str | None = None,
+    response_kind: str = "chat",
 ) -> AgentRequestClaim:
     """原子地决定当前进程是否可以执行这次 Agent 请求。"""
-    message_hash = hash_request_message(message)
+    message_hash = hash_request_message(message, response_kind)
     execution_token = str(uuid4())
 
     if try_insert_agent_request(

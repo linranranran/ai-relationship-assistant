@@ -52,8 +52,8 @@ class PersonExtraction(Contract):
 
 
 class RelationExtraction(Contract):
-    person: str
-    related_to: str
+    person: str = Field(description="角色持有者 B；例如张是杨的上司时填张。对应图边终点。")
+    related_to: str = Field(description="被描述的人 A；例如张是杨的上司时填杨。图边为 A-[type]->B。")
     type: str
     through: str | None = None
 

@@ -17,6 +17,7 @@ from backend.config import (
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MODEL,
+    LLM_ENABLE_THINKING,
     LLM_REQUEST_TIMEOUT_SECONDS,
 )
 from openai import OpenAI
@@ -93,6 +94,10 @@ def _request_kwargs(system_prompt, messages, temperature, response_format=None, 
     }
     if response_format:
         kwargs["response_format"] = response_format
+    if LLM_ENABLE_THINKING is not None:
+        # OpenAI SDK 不定义 enable_thinking；不能把它塞入 messages 或伪装成
+        # 标准参数。供应商扩展统一在这里传递，普通文本、tools 和流式均复用。
+        kwargs["extra_body"] = {"enable_thinking": LLM_ENABLE_THINKING}
 
     return kwargs, final_estimate
 

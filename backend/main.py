@@ -37,6 +37,7 @@ from backend.routers.stream import router as stream_router
 # TO-DO: 实现完 router 后取消注释
 from backend.routers.chat import router as chat_router
 from backend.routers.auth import router as auth_router
+from backend.routers.sales import router as sales_router
 
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,10 @@ async def lifespan(_app: FastAPI):
         ensure_stream_schema()
         ensure_history_schema()
         ensure_budget_schema()
+        from backend.db.customer_chat_store import ensure_sales_schema
+        from backend.sales.context import validate_sales_config
+        validate_sales_config()
+        ensure_sales_schema()
         from backend.db.agent_request_store import ensure_strategy_schema
         from backend.agent.strategies.factory import validate_strategy
         from backend.config import AGENT_TOOL_STRATEGY, AGENT_MAX_NO_PROGRESS_ROUNDS
@@ -153,6 +158,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(stream_router)
+app.include_router(sales_router)
 
 
 @app.get("/api/health")

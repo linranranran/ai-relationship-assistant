@@ -1,5 +1,6 @@
 import { Button, MessagePlugin } from 'tdesign-react'
 import ChatIcon from './ChatIcon'
+import SalesPreparationCard from '../sales/SalesPreparationCard'
 
 const timeLabel = (value) => value && !Number.isNaN(Date.parse(value))
   ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value))
@@ -24,7 +25,9 @@ export default function ChatMessage({ message: msg, busy, actions }) {
           {msg.interaction && <span className="chat-pill">需要你的回应</span>}
         </div>
         <div className={`chat-bubble ${msg.retry || msg.statusCheck ? 'chat-bubble--notice' : ''}`}>
-          <div className="chat-message-text">{msg.content}</div>
+          {/* 文本仍保留供复制/记忆使用，已有结构化结果则显示可点证据的卡片。 */}
+          {msg.salesPreparation ? <SalesPreparationCard result={msg.salesPreparation} />
+            : <div className="chat-message-text">{msg.content}</div>}
           {(msg.retry || msg.statusCheck) && <div className="chat-message-actions">
             {msg.retry && <Button size="small" variant="outline" disabled={busy}
               onClick={() => actions.retry(msg.retry)}>

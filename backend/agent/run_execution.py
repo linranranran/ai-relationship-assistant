@@ -31,9 +31,12 @@ def _finish_cancellation(run, graph, on_claim):
     from backend.routers.chat import _graph_config
     claim = claim_agent_request(owner_id=run["owner_id"], request_id=run["request_id"],
                                 thread_id=run["thread_id"], message=run["input"]["message"],
+                                response_kind=run["input"].get("response_kind", "chat"),
                                 stale_after_seconds=0)
     if claim.action == AgentRequestAction.RETURN_RESPONSE:
-        if claim.response["status"] in {"COMPLETED", "PARTIALLY_COMPLETED", "BUDGET_EXCEEDED", "CANCELLED"}:
+        # completed 请求可缓存“已结束但业务失败”的结果。它没有可再次领取的
+        # 执行 token，不能像等待人工答案那样 claim_resume。
+        if claim.response["status"] in {"COMPLETED", "PARTIALLY_COMPLETED", "BUDGET_EXCEEDED", "CANCELLED", "FAILED"}:
             return ChatResponse.model_validate(claim.response)
         from backend.agent.request_idempotency import claim_agent_resume
         claim = claim_agent_resume(owner_id=run["owner_id"], request_id=run["request_id"], stale_after_seconds=0)
@@ -153,7 +156,11 @@ def _execute_with_audit(run):
                                                stale_after_seconds=0)
             else:
                 # 已独占会话锁，死进程留下的 request 租约可以立即接管，无需等5分钟。
-                response = _chat_sync(ChatRequest(message=run["input"]["message"]),
+                # 任务中还保存服务端 current_user，不能整个传入严格请求模型。
+                # 从公开请求字段重建，保留 response_kind；旧任务缺省 chat。
+                request = ChatRequest.model_validate({key: run["input"][key]
+                                                       for key in ChatRequest.model_fields if key in run["input"]})
+                response = _chat_sync(request,
                                       run["input"]["current_user"], idempotency_key=run["request_id"],
                                       graph_override=graph, on_claim=on_claim, stale_after_seconds=0)
             if response.status != "CANCELLED":

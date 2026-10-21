@@ -1,0 +1,15 @@
+
+> frontend@0.0.0 test
+> node --test test/**/*.test.js
+
+✔ auth validation accepts a mainland mobile number and valid password (0.9118ms)
+✔ auth validation rejects malformed phone numbers and short passwords (0.1756ms)
+✔ chat payload trims text, enforces the limit, and contains no identity fields (0.1277ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 53.7045

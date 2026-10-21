@@ -78,7 +78,7 @@ def _stop_request_without_task(owner_id: str, request_id: str):
             return _finish_cancellation({
                 "owner_id": owner_id, "request_id": request_id,
                 "thread_id": derive_thread_id(owner_id),
-                "input": {"message": values["user_input"]},
+                "input": {"message": values["user_input"], "response_kind": values.get("response_kind", "chat")},
             }, graph, lambda token: None)
     except SessionBusy as exc:
         raise HTTPException(409, str(exc)) from exc

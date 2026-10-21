@@ -23,6 +23,18 @@ def _get_int(key: str, default: int) -> int:
 def _get_float(key: str, default: float) -> float:
     return float(os.getenv(key, default))
 
+
+def _get_optional_bool(key: str) -> bool | None:
+    """空值保持供应商默认；显式开关只接受明确布尔文本，避免拼错配置。"""
+    value = _get(key).strip().lower()
+    if not value:
+        return None
+    if value in {"true", "1", "yes"}:
+        return True
+    if value in {"false", "0", "no"}:
+        return False
+    raise ValueError(f"{key} 必须为空、true 或 false")
+
 LOG_LEVEL = _get("LOG_LEVEL", "INFO")
 
 # --- LangGraph 进程内流式执行与 SSE ---
@@ -45,6 +57,9 @@ logging.basicConfig(
 LLM_API_KEY = _get("LLM_API_KEY", "sk-placeholder")
 LLM_BASE_URL = _get("LLM_BASE_URL", "https://api.deepseek.com/v1")
 LLM_MODEL = _get("LLM_MODEL", "deepseek-chat")
+# Qwen 的思考 Token 也可能占响应上限。通过兼容 API 的 extra_body 显式控制，
+# 空值时不发送非标准参数，保持其他供应商兼容；仅给支持该开关的模型配置。
+LLM_ENABLE_THINKING = _get_optional_bool("LLM_ENABLE_THINKING")
 LLM_REQUEST_TIMEOUT_SECONDS = _get_float("LLM_REQUEST_TIMEOUT_SECONDS", 600.0)
 
 # --- Langfuse 审计；旧 LANGFUSE_HOST 仍兼容，4.x 推荐 BASE_URL ---
@@ -108,6 +123,12 @@ AGENT_MEMORY_WORKER_POLL_SECONDS = _get_float(
     "AGENT_MEMORY_WORKER_POLL_SECONDS", 2.0
 )
 AGENT_MEMORY_JOB_STALE_SECONDS = _get_int("AGENT_MEMORY_JOB_STALE_SECONDS", 300)
+
+# 销售证据窗口独立于 Agent 会话记忆。先按客户过滤，再装配有限原文；这些
+# 初值需要用模拟案例校准，最终调用仍接受全局输入/输出和总执行预算检查。
+SALES_PREP_CANDIDATE_LIMIT = _get_int("SALES_PREP_CANDIDATE_LIMIT", 100)
+SALES_PREP_MESSAGE_LIMIT = _get_int("SALES_PREP_MESSAGE_LIMIT", 20)
+SALES_PREP_EVIDENCE_TOKEN_BUDGET = _get_int("SALES_PREP_EVIDENCE_TOKEN_BUDGET", 3000)
 
 # --- ChromaDB ---
 CHROMA_PERSIST_DIR = _get("CHROMA_PERSIST_DIR", "./chroma_data")

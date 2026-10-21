@@ -1,0 +1,53 @@
+{
+  "source_conversation_id": "demo-yangxin-202610",
+  "messages": [
+    {
+      "source_message_id": "demo-yx-001",
+      "speaker": "customer",
+      "sent_at": "2026-10-08T10:00:00+08:00",
+      "text": "我们准备梳理审批流程，最关心实施周期，预算还没有确定。"
+    },
+    {
+      "source_message_id": "demo-yx-002",
+      "speaker": "sales",
+      "sent_at": "2026-10-08T10:01:00+08:00",
+      "text": "我明天下午给你发一版实施方案。"
+    },
+    {
+      "source_message_id": "demo-yx-003",
+      "speaker": "customer",
+      "sent_at": "2026-10-09T10:00:00+08:00",
+      "text": "你昨天发来的实施方案已经收到了，谢谢。"
+    },
+    {
+      "source_message_id": "demo-yx-004",
+      "speaker": "customer",
+      "sent_at": "2026-10-09T10:01:00+08:00",
+      "text": "还想了解如何与现有系统集成，技术评估通过后再讨论采购。"
+    },
+    {
+      "source_message_id": "demo-yx-005",
+      "speaker": "sales",
+      "sent_at": "2026-10-10T10:00:00+08:00",
+      "text": "下周我联系你安排一次产品演示。"
+    },
+    {
+      "source_message_id": "demo-yx-006",
+      "speaker": "customer",
+      "sent_at": "2026-10-10T10:01:00+08:00",
+      "text": "王总喜欢打高尔夫，但我自己对运动没有特别偏好。"
+    },
+    {
+      "source_message_id": "demo-yx-007",
+      "speaker": "customer",
+      "sent_at": "2026-10-11T10:00:00+08:00",
+      "text": "目前暂时不考虑更换财务系统，只讨论审批流程。"
+    },
+    {
+      "source_message_id": "demo-yx-008",
+      "speaker": "sales",
+      "sent_at": "2026-10-11T10:01:00+08:00",
+      "text": "下次我们可以先确认参与技术评估的同事和具体系统。"
+    }
+  ]
+}

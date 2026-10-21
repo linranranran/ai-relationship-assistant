@@ -74,6 +74,7 @@ def apply_schema() -> None:
 def verify_schema() -> list[str]:
     """确认业务幂等表和记忆表存在，返回已找到的表名。"""
     expected = [
+        "customer_chat_message",
         "agent_request",
         "conversation_message",
         "conversation_summary",
@@ -99,6 +100,7 @@ def main() -> None:
     apply_schema()
     tables = verify_schema()
     expected = {
+        "customer_chat_message",
         "agent_request",
         "conversation_message",
         "conversation_summary",

@@ -10,6 +10,7 @@ export const makeMessage = (role, content, requestId, extra = {}) => ({
 export const historyMessages = (items) => items.map((item) =>
   makeMessage(item.role, item.content, item.request_id, {
     messageId: item.message_id, createdAt: item.created_at,
+    salesPreparation: item.sales_preparation || null,
   }))
 
 export const mergeMessages = (current, incoming, prepend = false) => {

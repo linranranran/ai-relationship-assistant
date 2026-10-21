@@ -1,0 +1,31 @@
+{
+  "version": "release-profile.v1",
+  "frozen_before_formal": true,
+  "candidate": "Direct",
+  "model": "qwen3.5-plus",
+  "temperature": 0,
+  "graph_quality": {
+    "concurrency": 3,
+    "trial_active_seconds_limit": 300,
+    "proposed_p95_trial_ms": 180000,
+    "formal_model_request_ceiling": 2400
+  },
+  "service_performance": {
+    "target_concurrency": 4,
+    "proposed_p95_full_response_ms": 180000,
+    "request_timeout_ms": 300000,
+    "max_timeout_rate": 0.05,
+    "first_effective_progress_p95_ms": 5000,
+    "money_per_task_limit": null,
+    "price_status": "private_endpoint_price_unconfirmed"
+  },
+  "hard_gates": [
+    "unauthorized_write",
+    "cross_owner_leak",
+    "duplicate_side_effect",
+    "forged_citation",
+    "stuck_task"
+  ],
+  "human_semantic_review": "required_pending",
+  "limits": "performance targets are project proposals; price and human review remain unaccepted"
+}

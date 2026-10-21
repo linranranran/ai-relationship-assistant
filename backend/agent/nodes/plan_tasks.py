@@ -45,7 +45,9 @@ def _build_planning_prompt(state: AgentState) -> str:
 结果引用格式：{"$ref":{"step_id":"find_target","path":"data.id"}}。
 已完成目标的结果不属于本计划的 step_id，不能用 $ref 引用那些旧步骤。
 重规划保留已经成功的写入，仅补尚未完成的步骤；无法安全确定人物时返回空 tool_calls。
-删除前的用户确认由执行节点处理，不得自行假设已授权。
+修改/删除的用户确认由执行节点处理，不得自行假设已授权。
+工具计划表示操作建议，应包含实际修改/删除工具；不要只查询后等待确认。
+执行器会在写入前中断，请勿用普通回复替代系统确认流程。
 """
         if state["intent"] in {"ADD_PERSON", "UPDATE_PERSON"}:
             common += """

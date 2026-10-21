@@ -21,8 +21,11 @@ RELATIONS = (
     "老板", "上司", "下属", "老师", "学生",
 )
 RELATION_PATTERN = "|".join(RELATIONS)
+# 新工具除了进入模型目录，还必须在执行授权策略中明确分类。
+# 沟通准备上下文仅读取 owner 下的档案/聊天，不产生写入，因此不需要写操作确认。
+# 漏加这里会被下面“未知工具保守确认”拦截，导致模型查到客户后无法继续准备。
 READ_TOOLS = frozenset({"find_person", "get_person_detail", "list_relations",
-                        "query_relation_path", "get_kinship_title"})
+                        "query_relation_path", "get_kinship_title", "get_sales_preparation_context"})
 # 否定、查询、假设和转述不能作为免确认的事实来源；出现这些表达就回退确认。
 UNCERTAIN = re.compile(
     r"如果|假如|假设|比如|例如|示例|是否|是不是|可能|也许|据说|听说|好像|大概|似乎|貌似|应该是|记错|不太确定|不清楚|"

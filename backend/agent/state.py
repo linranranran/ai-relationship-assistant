@@ -18,6 +18,7 @@ class AgentState(TypedDict):
     budget_reason: str
     # === 输入 ===
     user_input: str                    # 用户原始输入
+    response_kind: str                 # chat / sales_preparation；期望产物，不是 goal
     user_id: str                       # 当前用户 ID
     self_person_id: str                # 当前用户私有关系图中的“本人”节点 ID
     request_id: str                    # 本次请求链路 ID
@@ -99,3 +100,6 @@ class AgentState(TypedDict):
 
     # === 输出 ===
     response: str                      # 最终回复给用户
+    sales_preparation: Optional[dict]   # 校验后的准备单；每个新请求重置，恢复原请求保留
+    response_error_code: Optional[str] # 安全的业务失败代码，不暴露供应商或数据库异常
+    response_retryable: Optional[bool]

@@ -168,7 +168,11 @@ def _to_chat_response(final_state: dict) -> ChatResponse:
         intent=final_state.get("intent"),
         tool_calls=tool_names,
         status=(final_state["execution_decision"] if final_state.get("execution_decision") in
-                {"PARTIALLY_COMPLETED","BUDGET_EXCEEDED"} else "COMPLETED"),
+                {"PARTIALLY_COMPLETED","BUDGET_EXCEEDED","FAILED"} else "COMPLETED"),
+        # 准备模块只发布经过校验的结果；失败/取消时没有可展示卡片。
+        sales_preparation=final_state.get("sales_preparation"),
+        error_code=final_state.get("response_error_code"),
+        retryable=final_state.get("response_retryable"),
         goals=[{"goal_id":g["goal_id"],"description":g["description"],"status":g["status"],
                 "failure_reason":g.get("failure_reason")} for g in final_state.get("goals",[])],
         budget=final_state.get("budget_snapshot"),
@@ -215,7 +219,8 @@ async def chat_endpoint(
     user_context = {key: current_user[key] for key in ("user_id", "self_person_id", "phone") if key in current_user}
     try:
         task = await run_in_threadpool(accept_chat, current_user["user_id"], request_id,
-                                      derive_thread_id(current_user["user_id"]), request.message, user_context)
+                                      derive_thread_id(current_user["user_id"]), request.message, user_context,
+                                      response_kind=request.response_kind)
     except TaskConflict as exc:
         raise HTTPException(409, str(exc)) from exc
     if task["status"] in {"queued", "running"}:
@@ -297,6 +302,7 @@ def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
                 request_id=context.request_id,
                 thread_id=thread_id,
                 message=request.message,
+                response_kind=request.response_kind,
                 strategy_mode=strategy_mode, strategy_version=strategy_version,
                 catalog_schema_hash=catalog_schema_hash,
                 **({"stale_after_seconds": stale_after_seconds} if stale_after_seconds is not None else {}),
@@ -338,6 +344,9 @@ def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
             strategy_version = record.get("strategy_version", STRATEGY_VERSION)
             catalog_schema_hash = record.get("catalog_schema_hash") or catalog_schema_hash
 
+    if request.response_kind == "sales_preparation" and strategy_mode != "direct":
+        raise HTTPException(409, "沟通准备目前只支持 Direct 模式")
+
     initial_state = AgentState(
         execution_version=2,goals=[],active_goal_id=None,plan_revision=0,budget_snapshot={},budget_reason="",
         strategy_mode=strategy_mode, strategy_version=strategy_version, catalog_schema_hash=catalog_schema_hash,
@@ -348,6 +357,9 @@ def _chat_sync(request, current_user, http_response=None, idempotency_key=None,
         direct_rejected_mutations=[], completion_basis="",
         requirements_verified=False if strategy_mode == "direct" else None,
         user_input=request.message,
+        # 新请求清空派生结果，原请求恢复使用 checkpoint，不重新覆盖快照。
+        response_kind=request.response_kind, sales_preparation=None,
+        response_error_code=None, response_retryable=None,
         user_id=context.owner_id,
         self_person_id=context.self_person_id,
         request_id=context.request_id,
@@ -462,6 +474,7 @@ def get_chat_history(
     pending = page.pop("pending")
     page["pending_request"] = {
         "request_id": pending["request_id"], "message": pending["message"],
+        "response_kind": pending.get("response_kind") or "chat",
         "created_at": pending["created_at"], "response": task_response({**pending, "owner_id": owner_id}),
     } if pending else None
     return page
@@ -654,7 +667,8 @@ async def _queue_interaction(current_user, interrupt_id, answer, http_response, 
             except ValueError as exc:
                 raise TaskConflict(str(exc)) from exc
             context = {key: current_user[key] for key in ("user_id", "self_person_id", "phone") if key in current_user}
-            accept_chat(owner_id, request_id, derive_thread_id(owner_id), snapshot.values["user_input"], context)
+            accept_chat(owner_id, request_id, derive_thread_id(owner_id), snapshot.values["user_input"], context,
+                        response_kind=snapshot.values.get("response_kind", "chat"))
         return accept_resume(owner_id, request_id, interrupt_id, answer)
 
     try:

@@ -1,6 +1,6 @@
 # 模拟客户聊天与销售沟通准备开发计划
 
-> **For agentic workers:** 后续实施按 `superpowers:executing-plans` 逐项推进；只有用户明确选择委派时才使用 `superpowers:subagent-driven-development`。本次交付计划，不开始产品编码。
+> **For agentic workers:** 按 `superpowers:executing-plans` 逐项推进；只有用户明确选择委派时才使用 `superpowers:subagent-driven-development`。2026-10-13 已执行核心实现，实际验收及未完成验证见 [验收记录](../../evaluations/sales-preparation/acceptance.md)。
 
 **Goal:** 用模拟客户聊天完成导入、证据检索、销售准备单和原文展示的闭环，形成可演示的第二个核心功能。
 
@@ -49,7 +49,7 @@
 
 ## 文件职责
 
-以下“新增”均为待创建，不能据此认为功能已完成。
+下列新增文件已创建；不能仅凭文件存在认定语义质量、真实集成和稳定性已经通过验收。
 
 | 新增文件 | 职责 |
 |---|---|

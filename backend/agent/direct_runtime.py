@@ -53,6 +53,12 @@ def validate_direct_call(state: dict, call: dict) -> None:
     """
     from backend.agent.confirmation import MODEL_FORBIDDEN_ARGUMENTS
     args, tool = call["args"], call["tool"]
+    if state.get("response_kind") == "sales_preparation" and tool not in {
+        "find_person", "get_person_detail", "get_sales_preparation_context"
+    }:
+        # 同一检查也由 execute_tools 在真实参数解析后调用。故恢复旧检查点、
+        # 篡改建议或聊天提示注入都不能绕过只读边界；不只依赖模型守提示词。
+        raise ModelBusinessValidationError("SALES_READ_ONLY", "沟通准备只允许读取客户资料与证据，修改请另发普通请求。")
     if any(k in MODEL_FORBIDDEN_ARGUMENTS for k in args):
         raise ModelBusinessValidationError("TRUSTED_ARGUMENT_FORGED", "身份、确认和幂等参数只能由服务端提供。")
     bindings, records = direct_bindings(state), direct_records(state)
