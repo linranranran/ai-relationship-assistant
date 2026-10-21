@@ -1,40 +1,23 @@
-# ============================================================
-# AI 人际关系助手 — Python 依赖
-# ============================================================
-
-# --- Web 框架 ---
+# 知客-销售沟通助手
+# pip兼容入口；依赖声明来自pyproject.toml。复现锁定环境请用uv sync --locked。
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.19
-
-# --- LLM & Agent 编排 ---
-# 当前 LLM 封装直接使用 OpenAI-compatible SDK，不安装 LangChain 高层 Agent。
-# 必须与 pyproject.toml 和兼容性测试中的审核版本保持一致。
 langgraph==1.2.12
 langgraph-checkpoint-postgres>=3.1.2
 openai>=1.109,<3
 langchain-openai>=1,<2
-
-# --- 数据库 ---
+langchain>=1,<2
 neo4j==5.27.0
-chromadb==0.5.23
-psycopg[binary,pool]>=3.2,<4
-sse-starlette>=2.2,<3
-
-# --- 数据模型 ---
+chromadb==0.6.3
 pydantic==2.10.4
 pydantic-settings==2.7.0
-
-# --- 工具 ---
 python-dotenv==1.0.1
 httpx==0.28.1
-
-# --- 可观测性 ---
-langfuse>=4.15.3,<5
-langchain>=1,<2
 langsmith>=0.2.11
-
-# --- 第二版：人脸识别（暂不安装）---
-# insightface==0.7.3
-# deepface==0.0.93
-# onnxruntime==1.20.1
+langfuse>=4.15.3,<5
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-jose[cryptography]==3.3.0
+psycopg[binary,pool]>=3.2,<4
+sse-starlette>=2.2,<3

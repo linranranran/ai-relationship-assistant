@@ -55,7 +55,8 @@ export default function Login() {
       maxWidth: 400, margin: '100px auto', padding: 24,
       background: '#fff', borderRadius: 8, boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
     }}>
-      <h2 style={{ textAlign: 'center', marginBottom: 24 }}>AI 人际关系助手</h2>
+      <h2 style={{ textAlign: 'center', marginBottom: 12 }}>知客</h2>
+      <p style={{ textAlign: 'center', color: '#64748b', marginBottom: 24 }}>销售沟通助手 · 让每次沟通有据可依</p>
       <Tabs defaultValue="login">
         <TabPanel value="login" label="登录">
           <Form labelAlign="top">

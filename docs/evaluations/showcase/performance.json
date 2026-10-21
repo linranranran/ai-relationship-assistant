@@ -1,0 +1,87 @@
+{
+  "layer": "real_http_sse_pg_neo4j",
+  "concurrency": 4,
+  "samples": 8,
+  "first_progress_p95_ms": 1112.3434000000998,
+  "first_content_p95_ms": 15243.730599999253,
+  "full_response_p95_ms": 15866.878899998483,
+  "timeouts": 0,
+  "business_correct": 8,
+  "limitation": "eight synthetic requests on shared infrastructure; not load capacity certification",
+  "model": "qwen3.6-flash",
+  "enable_thinking": false,
+  "rows": [
+    {
+      "iteration": 0,
+      "status": "COMPLETED",
+      "first_effective_progress_ms": 1112.3434000000998,
+      "first_answer_content_ms": 15243.730599999253,
+      "full_response_ms": 15866.878899998483,
+      "timeout": false,
+      "business_correct": true
+    },
+    {
+      "iteration": 1,
+      "status": "COMPLETED",
+      "first_effective_progress_ms": 795.7052999990992,
+      "first_answer_content_ms": 14516.586099998676,
+      "full_response_ms": 15674.775599998611,
+      "timeout": false,
+      "business_correct": true
+    },
+    {
+      "iteration": 0,
+      "status": "COMPLETED",
+      "first_effective_progress_ms": 1078.1146999997873,
+      "first_answer_content_ms": 13612.278700000388,
+      "full_response_ms": 14795.464599999832,
+      "timeout": false,
+      "business_correct": true
+    },
+    {
+      "iteration": 1,
+      "status": "COMPLETED",
+      "first_effective_progress_ms": 820.5037000006996,
+      "first_answer_content_ms": 14442.479000001185,
+      "full_response_ms": 15589.491700000508,
+      "timeout": false,
+      "business_correct": true
+    },
+    {
+      "iteration": 0,
+      "status": "COMPLETED",
+      "first_effective_progress_ms": 1088.9363000005687,
+      "first_answer_content_ms": 12514.73409999926,
+      "full_response_ms": 13122.435299999779,
+      "timeout": false,
+      "business_correct": true
+    },
+    {
+      "iteration": 1,
+      "status": "COMPLETED",
+      "first_effective_progress_ms": 822.2208999995928,
+      "first_answer_content_ms": 13380.96620000033,
+      "full_response_ms": 14562.850500000422,
+      "timeout": false,
+      "business_correct": true
+    },
+    {
+      "iteration": 0,
+      "status": "COMPLETED",
+      "first_effective_progress_ms": 1071.763899999496,
+      "first_answer_content_ms": 13050.165699998615,
+      "full_response_ms": 14245.14470000031,
+      "timeout": false,
+      "business_correct": true
+    },
+    {
+      "iteration": 1,
+      "status": "COMPLETED",
+      "first_effective_progress_ms": 792.1107000001939,
+      "first_answer_content_ms": 13375.235699999394,
+      "full_response_ms": 13986.44880000029,
+      "timeout": false,
+      "business_correct": true
+    }
+  ]
+}

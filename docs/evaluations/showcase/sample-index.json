@@ -1,0 +1,26 @@
+[
+  {
+    "case_id": "P12",
+    "mode": "direct",
+    "file": "P12-direct-1.json",
+    "trial_id": "P12-direct-1-a51d561bba",
+    "physical_model_requests": 5,
+    "original_rule_pass": true
+  },
+  {
+    "case_id": "S01",
+    "mode": "direct",
+    "file": "S01-direct-1.json",
+    "trial_id": "S01-direct-1-5a4865f2cd",
+    "physical_model_requests": 5,
+    "original_rule_pass": true
+  },
+  {
+    "case_id": "P13",
+    "mode": "plan",
+    "file": "P13-plan-1.json",
+    "trial_id": "P13-plan-1-4a87094807",
+    "physical_model_requests": 8,
+    "original_rule_pass": false
+  }
+]

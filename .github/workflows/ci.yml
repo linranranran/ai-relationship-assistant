@@ -1,0 +1,59 @@
+name: Offline checks
+
+on:
+  push:
+    branches: [master, develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      LANGFUSE_TRACING_ENABLED: 'false'
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: '9'
+      POSTGRES_POOL_TIMEOUT_SECONDS: '1'
+      NEO4J_URI: bolt://127.0.0.1:9
+      LLM_BASE_URL: http://127.0.0.1:9/v1
+      LLM_API_KEY: offline-placeholder
+      EMBEDDING_BASE_URL: http://127.0.0.1:9/v1
+      EMBEDDING_API_KEY: offline-placeholder
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run python -m compileall -q backend scripts examples
+      - run: uv run python -m unittest discover -s tests -p 'test_*.py'
+      - run: uv run python -m scripts.evaluation.verify_snapshot
+      - run: uv run python -m scripts.check_docs
+      # 不运行模型评测或数据库故障脚本；这些需要独立环境与费用授权。
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build

@@ -1,5 +1,5 @@
 # ============================================================
-# AI 人际关系助手 — FastAPI 入口
+# 知客-销售沟通助手 — FastAPI 入口
 # ============================================================
 
 import asyncio
@@ -139,8 +139,8 @@ async def lifespan(_app: FastAPI):
         logger.info("PostgreSQL 业务连接池已关闭")
 
 app = FastAPI(
-    title="AI 人际关系助手",
-    description="用 AI 管理你的人际关系网络，再也不怕叫不出名字",
+    title="知客-销售沟通助手",
+    description="自然语言维护客户资料与关系，基于聊天证据生成可追溯的销售沟通准备。",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -166,7 +166,7 @@ async def health_check():
     """健康检查"""
     return {
         "status": "ok",
-        "app": "AI 人际关系助手",
+        "app": "知客-销售沟通助手",
         "version": "0.1.0",
         "checkpointer": get_checkpointer_backend(),
     }

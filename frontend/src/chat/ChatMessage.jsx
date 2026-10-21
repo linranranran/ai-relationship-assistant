@@ -21,7 +21,7 @@ export default function ChatMessage({ message: msg, busy, actions }) {
       </div>
       <div className="chat-message-body">
         <div className="chat-message-meta">
-          <span>{isUser ? '你' : '关系助手'}</span><time dateTime={msg.createdAt}>{timeLabel(msg.createdAt)}</time>
+          <span>{isUser ? '你' : '知客'}</span><time dateTime={msg.createdAt}>{timeLabel(msg.createdAt)}</time>
           {msg.interaction && <span className="chat-pill">需要你的回应</span>}
         </div>
         <div className={`chat-bubble ${msg.retry || msg.statusCheck ? 'chat-bubble--notice' : ''}`}>

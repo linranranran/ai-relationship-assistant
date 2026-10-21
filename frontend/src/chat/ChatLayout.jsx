@@ -16,12 +16,12 @@ export default function ChatLayout({ user, messages, view, scrollRef, bottomRef,
   return (
     <div className="chat-app">
       <aside className="chat-sidebar">
-        <a className="chat-brand" href="/chat" aria-label="关系助手首页">
+        <a className="chat-brand" href="/chat" aria-label="知客销售沟通助手首页">
           <span className="chat-brand-icon"><ChatIcon size={24} /></span>
-          <span><strong>关系助手</strong><small>让每一次连接更有温度</small></span>
+          <span><strong>知客</strong><small>销售沟通助手</small></span>
         </a>
         <div className="chat-sidebar-label">我的工作空间</div>
-        <div className="chat-session"><ChatIcon name="chat" /><span>日常关系对话<small>默认会话 · 历史自动保存</small></span>
+        <div className="chat-session"><ChatIcon name="chat" /><span>客户工作台<small>默认会话 · 历史自动保存</small></span>
           <span className="chat-session-dot" />
         </div>
         <div className="chat-sidebar-label chat-sidebar-label--prompts">快捷提问</div>
@@ -45,8 +45,8 @@ export default function ChatLayout({ user, messages, view, scrollRef, bottomRef,
       </aside>
       <section className="chat-workspace">
         <header className="chat-header">
-          <div><div className="chat-header-eyebrow">RELATIONSHIP ASSISTANT</div>
-            <h1>人际关系助手</h1><p>记住重要的人，理清彼此的关系。</p>
+          <div><div className="chat-header-eyebrow">ZHIKE · SALES COMMUNICATION ASSISTANT</div>
+            <h1>知客-销售沟通助手</h1><p>记住客户信息，让下一次沟通有据可依。</p>
           </div>
           <div className="chat-header-right">
             <span className={`chat-connection ${view.connection === 'reconnecting' ? 'chat-connection--waiting' : ''}`}>
@@ -71,13 +71,13 @@ export default function ChatLayout({ user, messages, view, scrollRef, bottomRef,
               </Button>
             </div>}
             {!view.historyLoading && messages.length > 0 && <div className="chat-history-divider">
-              <span>{view.historyPage.hasMore ? '最近的对话' : '在这里，整理你的关系与记忆'}</span>
+              <span>{view.historyPage.hasMore ? '最近的对话' : '客户信息与沟通准备，都有迹可循'}</span>
             </div>}
             {!view.historyLoading && messages.length === 0 && !view.historyError && <div className="chat-welcome">
               <div className="chat-welcome-icon"><ChatIcon size={32} /></div>
-              <span className="chat-welcome-eyebrow">你的关系与记忆，都有迹可循</span>
-              <h2>从一个人，开始一段对话。</h2>
-              <p>告诉我你认识的人，了解他们的资料，<br />或一起梳理你们之间的关系。</p>
+              <span className="chat-welcome-eyebrow">客户资料 · 聊天证据 · 沟通准备</span>
+              <h2>了解客户，再开始沟通。</h2>
+              <p>记录客户资料、回顾已有信息，<br />基于模拟聊天证据准备下一次联系。</p>
               <div className="chat-welcome-prompts">{QUICK_PROMPTS.map((prompt) => <button key={prompt.title}
                 onClick={() => actions.prompt(prompt.text)} disabled={view.busy}>
                 <ChatIcon name={prompt.icon} size={21} /><strong>{prompt.title}</strong><span>{prompt.text}</span>

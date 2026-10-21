@@ -22,7 +22,7 @@ export const mergeMessages = (current, incoming, prepend = false) => {
 }
 
 export const QUICK_PROMPTS = [
-  { title: '记录一段关系', text: '我有个朋友叫张三，喜欢打篮球。', icon: 'people' },
-  { title: '了解一个人', text: '帮我查一下张建国的个人资料。', icon: 'person' },
-  { title: '梳理亲属称谓', text: '张建国和我是什么关系？', icon: 'relations' },
+  { title: '记录客户资料', text: '我有个客户叫杨鑫，职业是销售负责人。', icon: 'people' },
+  { title: '回顾客户信息', text: '帮我查一下杨鑫的个人资料。', icon: 'person' },
+  { title: '了解客户关系', text: '查询我和杨鑫之间的关系。', icon: 'relations' },
 ]

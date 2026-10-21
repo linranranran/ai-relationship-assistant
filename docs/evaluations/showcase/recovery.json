@@ -1,0 +1,208 @@
+[
+  {
+    "case_id": "E02",
+    "layer": "real_database_two_processes",
+    "pass": true,
+    "actions": [
+      "EXECUTE",
+      "IN_PROGRESS"
+    ]
+  },
+  {
+    "case_id": "E03",
+    "layer": "real_database_process_crash",
+    "pass": true,
+    "crash_exit_code": 71,
+    "pg_status_after_crash": "running",
+    "recovery_exit_code": 0,
+    "replay_action": "WAIT",
+    "person_count": 1,
+    "first_person_id": "p_0757ca8b-d2cf-475f-9d8c-53bbdc71610a",
+    "note": "测试调用真实业务写入函数；不声称覆盖辅助向量索引的跨库原子性"
+  },
+  {
+    "case_id": "E06",
+    "layer": "real_persistent_budget_component",
+    "pass": true,
+    "snapshot": {
+      "limits": {
+        "goals": 4,
+        "tokens": 60000,
+        "replans": 3,
+        "model_calls": 1,
+        "tool_attempts": 16,
+        "active_seconds": 300.0,
+        "clarifications": 3,
+        "discovery_calls": 8
+      },
+      "model_calls": 1,
+      "tool_attempts": 0,
+      "discovery_calls": 0,
+      "charged_tokens": 70,
+      "replans": 0,
+      "clarifications": 0,
+      "active_seconds": 0.0,
+      "exhausted_reason": "任务 model_calls 次数已达到上限"
+    },
+    "note": "未发付费请求；验证持久化计数、缓存与重试不能充值，非端到端模型耗尽演练"
+  },
+  {
+    "case_id": "E04",
+    "pass": true,
+    "note": "已经通过重启恢复评测",
+    "final": {
+      "sales_preparation": null,
+      "completion_basis": "MODEL_STOP_WITH_TOOL_RECEIPTS",
+      "requirements_verified": false,
+      "goals": [],
+      "budget": {
+        "limits": {
+          "goals": 4,
+          "tokens": 60000,
+          "replans": 3,
+          "model_calls": 12,
+          "tool_attempts": 16,
+          "active_seconds": 300.0,
+          "clarifications": 3,
+          "discovery_calls": 8
+        },
+        "replans": 0,
+        "model_calls": 4,
+        "tool_attempts": 2,
+        "active_seconds": 52.77969699999999,
+        "charged_tokens": 15350,
+        "clarifications": 0,
+        "discovery_calls": 0,
+        "exhausted_reason": null
+      },
+      "request_id": "7d0a5cac-18df-4826-9e8b-212ed33cf082",
+      "run_id": "09c41f34-6a48-4758-b2b3-023d312f8797",
+      "response": "已完成。\n姓名：杨鑫\n业务结果：更新成功\n变更：备注由“纯虚构评测客户”改为“已经通过重启恢复评测”",
+      "error_code": null,
+      "retryable": null,
+      "intent": "",
+      "tool_calls": [
+        "find_person",
+        "update_person"
+      ],
+      "status": "COMPLETED",
+      "confirmation": null,
+      "clarification": null
+    },
+    "experiment": "real service process terminated after PG interrupt persisted, new process resumed same interrupt_id"
+  },
+  {
+    "case_id": "E08",
+    "layer": "real_http_pg_checkpoint_schema_change",
+    "model": "qwen3.6-flash",
+    "pass": true,
+    "final": {
+      "sales_preparation": null,
+      "completion_basis": "SYSTEM_STOP",
+      "requirements_verified": false,
+      "goals": [],
+      "budget": {
+        "limits": {
+          "goals": 4,
+          "tokens": 60000,
+          "replans": 3,
+          "model_calls": 12,
+          "tool_attempts": 16,
+          "active_seconds": 300.0,
+          "clarifications": 3,
+          "discovery_calls": 8
+        },
+        "replans": 0,
+        "model_calls": 2,
+        "tool_attempts": 1,
+        "active_seconds": 7.351587999999999,
+        "charged_tokens": 8589,
+        "clarifications": 0,
+        "discovery_calls": 0,
+        "exhausted_reason": null
+      },
+      "request_id": "432e7e01-a7dc-4eb0-ac08-314c574b82c1",
+      "run_id": "dd113105-c2e4-48b6-9de6-18fe7168a65a",
+      "response": "执行协议已变化，已停止后续操作，请核对业务数据。\n已确认的成功工具步骤：查询人物。已经提交的操作不会回滚。",
+      "error_code": null,
+      "retryable": null,
+      "intent": "",
+      "tool_calls": [
+        "find_person",
+        "update_person"
+      ],
+      "status": "PARTIALLY_COMPLETED",
+      "confirmation": null,
+      "clarification": null
+    },
+    "person_unchanged": true,
+    "note": "原始Plus运行未进入目标步骤，单独补测并保留失败。",
+    "original_probe_pass": false,
+    "grading_correction": "允许如实保留已完成查询为 PARTIALLY_COMPLETED；必须协议停止、写入未发生。原始结果不覆盖。"
+  },
+  {
+    "case_id": "E06",
+    "layer": "real_http_model_pg_budget",
+    "pass": true,
+    "final": {
+      "sales_preparation": null,
+      "completion_basis": "SYSTEM_STOP",
+      "requirements_verified": false,
+      "goals": [],
+      "budget": {
+        "limits": {
+          "goals": 4,
+          "tokens": 60000,
+          "replans": 3,
+          "model_calls": 1,
+          "tool_attempts": 16,
+          "active_seconds": 300.0,
+          "clarifications": 3,
+          "discovery_calls": 8
+        },
+        "replans": 0,
+        "model_calls": 1,
+        "tool_attempts": 1,
+        "active_seconds": 3.498226,
+        "charged_tokens": 4810,
+        "clarifications": 0,
+        "discovery_calls": 0,
+        "exhausted_reason": "任务 model_calls 次数已达到上限"
+      },
+      "request_id": "56410b4f-0bfd-4923-929d-e4d5b62486bb",
+      "run_id": "f28beb15-b3ee-418e-b60f-b3b2b5bf3472",
+      "response": "任务 model_calls 次数已达到上限。已停止后续步骤；不能确认全部需求均已完成。\n已核对的成功工具步骤：查询人物。已提交的操作不会回滚。",
+      "error_code": null,
+      "retryable": null,
+      "intent": "",
+      "tool_calls": [
+        "find_person"
+      ],
+      "status": "BUDGET_EXCEEDED",
+      "confirmation": null,
+      "clarification": null
+    },
+    "budget": {
+      "limits": {
+        "goals": 4,
+        "tokens": 60000,
+        "replans": 3,
+        "model_calls": 1,
+        "tool_attempts": 16,
+        "active_seconds": 300.0,
+        "clarifications": 3,
+        "discovery_calls": 8
+      },
+      "model_calls": 1,
+      "tool_attempts": 1,
+      "discovery_calls": 0,
+      "charged_tokens": 4810,
+      "replans": 0,
+      "clarifications": 0,
+      "active_seconds": 3.498226,
+      "exhausted_reason": "任务 model_calls 次数已达到上限"
+    },
+    "retry_status": 200,
+    "retry_model_calls": 1
+  }
+]

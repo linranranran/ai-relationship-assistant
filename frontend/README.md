@@ -1,16 +1,20 @@
-# React + Vite
+# 知客前端
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + Vite + TDesign 的销售沟通界面，提供登录、历史会话、SSE 执行进度、确认/澄清、模拟聊天导入、准备单与证据抽屉。
 
-Currently, two official plugins are available:
+```bash
+npm ci
+npm run dev
+```
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+默认后端为 `http://localhost:8000/api`。需要更改时复制 `.env.example` 为 `.env.development.local`；不要把令牌或服务端密钥放进 `VITE_*` 变量。
 
-## React Compiler
+```bash
+npm test
+npm run lint
+npm run build
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+`src/pages/Chat.jsx` 管理请求恢复与订阅，`src/chat/` 展示对话，`src/sales/` 展示证据和准备单。服务端仍执行最终参数校验、客户归属和引用校验。
 
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+完整部署和功能说明见[项目 README](../README.md)及[本地运行指南](../docs/GETTING_STARTED.md)。

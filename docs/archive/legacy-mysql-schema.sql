@@ -1,19 +1,4 @@
-/*
- Navicat Premium Data Transfer
-
- Source Server         : 林染染阿里云MySQL8
- Source Server Type    : MySQL
- Source Server Version : 80034
- Source Host           : 47.109.139.48:3306
- Source Schema         : relation_agent
-
- Target Server Type    : MySQL
- Target Server Version : 80034
- File Encoding         : 65001
-
- Date: 25/09/2026 12:18:31
-*/
-
+-- 历史MySQL DDL，仅供阅读；当前初始化入口为backend.db.init_postgres。
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 

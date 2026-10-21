@@ -1,0 +1,168 @@
+{
+  "kind": "frozen_synthetic_evaluation_snapshot",
+  "evaluated_on": "2026-10-14",
+  "run_id": "20261014-141025-retest",
+  "model": "qwen3.6-flash",
+  "temperature": 0,
+  "enable_thinking": false,
+  "backend_source_sha256": "f825878b325b25dd2c8fae2d81403aa7534023ce711462da697678f29b200432",
+  "dataset_sha256": "72a393bcd50ad523ab8bce2d79b028c049c5556f39cf788f5da345580a60d14c",
+  "git_base": "31fc018441e70b78be6ce90a70d973ca776273ab",
+  "planned_trials": 180,
+  "started_trials": 180,
+  "physical_model_requests": 886,
+  "usage_known_requests": 880,
+  "prompt_tokens_known": 2340526,
+  "completion_tokens_known": 101494,
+  "citations": {
+    "valid": 358,
+    "total": 358,
+    "rate": 1.0
+  },
+  "positive_preparation_structure": {
+    "success": 42,
+    "total": 45
+  },
+  "original_rule_groups": {
+    "memory/direct": {
+      "trials": 36,
+      "rule_pass": {
+        "success": 35,
+        "total": 36,
+        "rate": 0.9722222222222222
+      },
+      "business_pass": {
+        "success": 35,
+        "total": 36,
+        "rate": 0.9722222222222222
+      },
+      "structure_pass": {
+        "success": 0,
+        "total": 0,
+        "rate": null
+      },
+      "safety_pass": {
+        "success": 36,
+        "total": 36,
+        "rate": 1.0
+      },
+      "multi_requirement_pass": {
+        "success": 6,
+        "total": 6,
+        "rate": 1.0
+      },
+      "p50_graph_trial_ms": 18374.03819999963,
+      "p95_graph_trial_ms": 35888.76820000041,
+      "model_requests": 242,
+      "tool_attempts": 110
+    },
+    "people/direct": {
+      "trials": 48,
+      "rule_pass": {
+        "success": 39,
+        "total": 48,
+        "rate": 0.8125
+      },
+      "business_pass": {
+        "success": 34,
+        "total": 42,
+        "rate": 0.8095238095238095
+      },
+      "structure_pass": {
+        "success": 0,
+        "total": 0,
+        "rate": null
+      },
+      "safety_pass": {
+        "success": 48,
+        "total": 48,
+        "rate": 1.0
+      },
+      "multi_requirement_pass": {
+        "success": 2,
+        "total": 9,
+        "rate": 0.2222222222222222
+      },
+      "p50_graph_trial_ms": 9663.458400000309,
+      "p95_graph_trial_ms": 16526.650200001313,
+      "model_requests": 199,
+      "tool_attempts": 100
+    },
+    "people/plan": {
+      "trials": 48,
+      "rule_pass": {
+        "success": 36,
+        "total": 48,
+        "rate": 0.75
+      },
+      "business_pass": {
+        "success": 30,
+        "total": 42,
+        "rate": 0.7142857142857143
+      },
+      "structure_pass": {
+        "success": 0,
+        "total": 0,
+        "rate": null
+      },
+      "safety_pass": {
+        "success": 47,
+        "total": 48,
+        "rate": 0.9791666666666666
+      },
+      "multi_requirement_pass": {
+        "success": 6,
+        "total": 9,
+        "rate": 0.6666666666666666
+      },
+      "p50_graph_trial_ms": 15896.621300000334,
+      "p95_graph_trial_ms": 27716.861599999902,
+      "model_requests": 237,
+      "tool_attempts": 92
+    },
+    "sales/direct": {
+      "trials": 48,
+      "rule_pass": {
+        "success": 45,
+        "total": 48,
+        "rate": 0.9375
+      },
+      "business_pass": {
+        "success": 0,
+        "total": 0,
+        "rate": null
+      },
+      "structure_pass": {
+        "success": 42,
+        "total": 48,
+        "rate": 0.875
+      },
+      "safety_pass": {
+        "success": 48,
+        "total": 48,
+        "rate": 1.0
+      },
+      "multi_requirement_pass": {
+        "success": 0,
+        "total": 0,
+        "rate": null
+      },
+      "p50_graph_trial_ms": 18213.57490000082,
+      "p95_graph_trial_ms": 32015.06429999972,
+      "model_requests": 208,
+      "tool_attempts": 103
+    }
+  },
+  "original_rule_scores_are_not_business_completion": true,
+  "full_business_task_completion_rate": null,
+  "release_gate": "NOT_ACCEPTED",
+  "human_semantic_review": "pending",
+  "public_raw_trials": 3,
+  "limits": [
+    "quality matrix uses fixture business/budget/checkpoint stores; real integration reported separately",
+    "P14 six attempts did not exercise the preset failure",
+    "literal citation validity is not semantic factual support",
+    "only selected synthetic raw trials published; full local records are not part of Git",
+    "branding publication does not rerun the paid evaluation"
+  ]
+}
