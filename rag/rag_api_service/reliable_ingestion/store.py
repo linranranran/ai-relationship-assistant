@@ -95,7 +95,7 @@ class Inbox:
     def claim(self):
         with self.connection(write=True) as db:
             row = db.execute("SELECT * FROM jobs WHERE status IN ('pending','retry') AND next_at<=? "
-                             'ORDER BY next_at,rowid LIMIT 1', (self.clock(),)).fetchone()
+                             'ORDER BY rowid LIMIT 1', (self.clock(),)).fetchone()
             if row is None:
                 return None
             db.execute("UPDATE jobs SET status='processing',attempts=attempts+1 WHERE id=?", (row['id'],))

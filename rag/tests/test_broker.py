@@ -46,6 +46,22 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(persisted[0]['body'], b'bad JSON')
         self.assertEqual(self.db.jobs(), [])
 
+    def test_escaped_surrogate_strings_are_quarantined_before_ack(self):
+        bodies = [event(file_name='\ud800.md'), event(trace_id='\udfff'),
+                  event(object={'bucket': 'knowledge', 'key': 'policy/\ud800.md', 'sha256': 'a' * 64})]
+        for index, body in enumerate(bodies, start=1):
+            with self.subTest(body=repr(body)):
+                acknowledgements = []
+                def ack(**kwargs):
+                    persisted = Inbox(self.db.path).pending_dead_letters()
+                    self.assertTrue(any(row['body'] == body for row in persisted))
+                    acknowledgements.append(kwargs)
+                channel = SimpleNamespace(basic_ack=ack)
+                Consumer(self.db).handle(channel, SimpleNamespace(delivery_tag=index), None, body)
+                self.assertEqual(len(acknowledgements), 1)
+        self.assertEqual(self.db.jobs(), [])
+        self.assertEqual(len(self.db.pending_dead_letters()), 3)
+
     def test_dead_letter_publish_failure_leaves_durable_outbox_pending(self):
         self.db.quarantine(b'bad', ValueError('malformed'))
         class BrokenPublisher:

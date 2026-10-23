@@ -20,6 +20,9 @@ class DocumentEvent:
             raise PermanentError('event exceeds 1 MiB')
         try:
             value = json.loads(body.decode('utf-8'))
+            # JSON escapes may contain lone surrogates even though the wire bytes are UTF-8.
+            # Reject them here so fingerprint/persistence cannot turn them into endless redeliveries.
+            canonical(value).encode('utf-8')
         except (ValueError, UnicodeError, TypeError, RecursionError) as exc:
             raise PermanentError('event must be UTF-8 JSON') from exc
         if not isinstance(value, dict):

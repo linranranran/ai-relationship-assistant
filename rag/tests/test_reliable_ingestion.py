@@ -38,6 +38,14 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(self.db.accept(event()), 'duplicate')
         self.assertEqual(len(self.db.jobs()), 1)
 
+    def test_due_retry_is_not_starved_by_newer_pending_tasks(self):
+        self.db.accept(event())
+        job = self.db.claim()
+        self.db.fail(job, TimeoutError('transient'))
+        self.now += 2
+        self.db.accept(event(event_id='new-document', document_id='other'))
+        self.assertEqual(self.db.claim()['id'], job['id'])
+
     def test_same_event_id_different_payload_is_rejected(self):
         self.db.accept(event())
         with self.assertRaises(PermanentError):

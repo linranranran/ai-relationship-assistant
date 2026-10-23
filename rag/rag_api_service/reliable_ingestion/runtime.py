@@ -50,8 +50,14 @@ def run():
 
         def index_loop():
             backend = None
+            recovery_needed = False
             while not stop.is_set():
                 try:
+                    if recovery_needed:
+                        # A previous SQL failure may leave a job processing. Do not claim
+                        # again until recovery itself has committed successfully.
+                        inbox.recover_interrupted()
+                        recovery_needed = False
                     if backend is None:
                         backend = make_backend(config)
                     outcome = Worker(inbox, backend).run_once()
@@ -59,12 +65,7 @@ def run():
                         stop.wait(.5)
                 except Exception as error:
                     logger.error('index worker unavailable error_type=%s', type(error).__name__)
-                    # If SQL failed after a side effect, only this thread can be in-flight.
-                    # Restore processing tasks before the next claim, including attempt limits.
-                    try:
-                        inbox.recover_interrupted()
-                    except Exception:
-                        pass
+                    recovery_needed = True
                     stop.wait(5)
 
         def dead_letter_loop():
