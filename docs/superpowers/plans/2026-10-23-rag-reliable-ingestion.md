@@ -1,6 +1,6 @@
 # RAG Reliable Ingestion Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 消费知识库文件变更事件，可靠落盘、可重试，并让完整的新文档版本原子进入混合检索。
 
@@ -31,10 +31,10 @@
 
 **Interfaces:** `DocumentEvent.parse(body)`, `Inbox.accept(body)`, `Inbox.claim()`, `Inbox.fail(job,error)`, `Inbox.publish(job,snapshot_id,generation)`。
 
-- [ ] 写入并运行失败测试：重复、冲突、版本乱序、删除、重试、中断恢复。
-- [ ] 实现严格事件校验、事务 Inbox、任务重试、版本 CAS、死信 Outbox。
-- [ ] 运行 `python -m unittest discover -s rag/tests -v`，预期全部通过。
-- [ ] 提交可独立测试的任务状态机。
+- [x] 写入并运行失败测试：重复、冲突、版本乱序、删除、重试、中断恢复。
+- [x] 实现严格事件校验、事务 Inbox、任务重试、版本 CAS、死信 Outbox。
+- [x] 运行 `python -m unittest discover -s rag/tests -v`，预期全部通过。
+- [x] 提交可独立测试的任务状态机。
 
 ### Task 2: Versioned indexing and query snapshots
 
@@ -42,10 +42,10 @@
 
 **Interfaces:** `Worker.run_once()`, `backend.stage(event,inbox) -> generation`, `backend.build_snapshot(event,generation,active) -> snapshot_id`。
 
-- [ ] 故障测试先失败：第 21 个 chunk 失败、BM25 失败、发布竞争、Embedding 复用、对象校验。
-- [ ] 实现不可变 generation、全量知识库 BM25 快照、单事务发布、查询预过滤。
-- [ ] 事件模式路由接入，拒绝绕过版本协议的旧写接口。
-- [ ] 运行全部 RAG 测试并提交。
+- [x] 故障测试先失败：第 21 个 chunk 失败、BM25 失败、发布竞争、Embedding 复用、对象校验。
+- [x] 实现不可变 generation、全量知识库 BM25 快照、单事务发布、查询预过滤。
+- [x] 事件模式路由接入，拒绝绕过版本协议的旧写接口。
+- [x] 运行全部 RAG 测试并提交。
 
 ### Task 3: RabbitMQ runtime and local simulation
 
@@ -53,7 +53,7 @@
 
 **Interfaces:** `Consumer.handle(channel,method,properties,body)`, `relay_dead_letters(inbox,publisher)`。
 
-- [ ] 先写故障测试：落盘失败不 ACK、持久落盘后 ACK、死信发布失败可恢复。
-- [ ] 实现 heartbeat 安全的消费线程、断线重连、进程锁、任务状态 CLI、confirmed publisher。
-- [ ] 提供新增/修改/删除/重放消息脚本与部署步骤；运行全部 RAG 测试与源文件检查。
+- [x] 先写故障测试：落盘失败不 ACK、持久落盘后 ACK、死信发布失败可恢复。
+- [x] 实现 heartbeat 安全的消费线程、断线重连、进程锁、任务状态 CLI、confirmed publisher。
+- [x] 提供新增/修改/删除/重放消息脚本与部署步骤；运行全部 RAG 测试与源文件检查。
 - [ ] 完成独立代码审查、必要修复与提交；尝试推送用户指定仓库并核验结果。

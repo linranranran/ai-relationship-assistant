@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 import sys
-import tempfile
 import unittest
+from test_support import WorkspaceTemp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'rag_api_service'))
 from reliable_ingestion.events import DocumentEvent
@@ -27,7 +27,7 @@ def event(version=1, action='document.created', event_id=None, **overrides):
 
 class InboxTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = WorkspaceTemp()
         self.addCleanup(self.temp.cleanup)
         self.now = 100.0
         self.db = Inbox(Path(self.temp.name) / 'inbox.sqlite3', max_attempts=3,
@@ -124,6 +124,25 @@ class InboxTests(unittest.TestCase):
                 with self.assertRaises(PermanentError):
                     self.db.accept(payload)
         self.assertEqual(self.db.jobs(), [])
+
+    def test_poison_json_types_depth_and_encoding_are_permanent_errors(self):
+        payloads = [event(event_type=[]), event(event_type={}), b'[' * 2000 + b']' * 2000,
+                    event().decode().encode('utf-16')]
+        for payload in payloads:
+            with self.subTest(size=len(payload)):
+                with self.assertRaises(PermanentError):
+                    self.db.accept(payload)
+
+    def test_manual_replay_failure_creates_a_new_dead_letter_delivery(self):
+        self.db.accept(event())
+        self.db.fail(self.db.claim(), PermanentError('bad content'))
+        first = self.db.pending_dead_letters()[0]
+        self.db.mark_dead_letter_sent(first['id'])
+        self.db.retry('event-1')
+        self.db.fail(self.db.claim(), PermanentError('still bad content'))
+        pending = self.db.pending_dead_letters()
+        self.assertEqual(len(pending), 1)
+        self.assertNotEqual(pending[0]['id'], first['id'])
 
 
 if __name__ == '__main__':

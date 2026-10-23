@@ -16,3 +16,5 @@ class Settings:
 
     RAG_API_HOST: str = os.getenv("RAG_API_HOST", "127.0.0.1")
     RAG_API_PORT: int = int(os.getenv("RAG_API_PORT", "8011"))
+    RAG_TENANT_ID: str = os.getenv('RAG_TENANT_ID', 'default')
+    RAG_SERVICE_TOKEN: str = os.getenv('RAG_SERVICE_TOKEN', '')

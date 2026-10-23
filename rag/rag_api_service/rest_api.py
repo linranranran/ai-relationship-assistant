@@ -3,18 +3,23 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from config.settings import Settings
 from utils.logger import setup_logger
 
 
 class QueryRequest(BaseModel):
-    query: str
+    query: str = Field(min_length=1, max_length=16000)
+    tenant_id: str = Field(default='default', pattern=r'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    knowledge_base_id: str = Field(default='default', pattern=r'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
 
 
 class ChunkConfigRequest(BaseModel):
@@ -27,6 +32,33 @@ logger = setup_logger(__name__)
 router = APIRouter()
 
 svc: Any = None
+
+
+def event_mode():
+    return os.getenv('RAG_INGESTION_MODE', 'events') == 'events'
+
+
+def require_legacy_write():
+    if event_mode():
+        raise HTTPException(status_code=409, detail='事件模式请通过知识库发布文档事件；此接口不允许绕过版本管理。')
+
+
+@lru_cache(maxsize=1)
+def get_event_query_service():
+    from reliable_ingestion.config import RuntimeConfig
+    from reliable_ingestion.query import EventQueryService
+    return EventQueryService(RuntimeConfig.from_env())
+
+
+def event_snapshot(tenant_id, knowledge_base_id):
+    from reliable_ingestion.config import RuntimeConfig
+    from reliable_ingestion.store import Inbox
+    from reliable_ingestion.events import canonical
+    config = RuntimeConfig.from_env()
+    snapshot_id = Inbox(config.database).snapshot(canonical([tenant_id, knowledge_base_id]))
+    if not snapshot_id:
+        return {'nodes': [], 'documents': {}}
+    return json.loads((config.root / 'snapshots' / snapshot_id / 'snapshot.json').read_text(encoding='utf-8'))
 
 
 def init_rag_service():
@@ -117,6 +149,7 @@ async def upload_docs(
     chunk_size: Optional[int] = Form(None),
     chunk_overlap: Optional[int] = Form(None),
 ):
+    require_legacy_write()
     init_rag_service()
     try:
         payload = [(file.filename or "unnamed", await file.read()) for file in files]
@@ -128,7 +161,16 @@ async def upload_docs(
 
 
 @router.get("/documents")
-async def list_docs():
+async def list_docs(tenant_id: str = 'default', knowledge_base_id: str = 'default'):
+    if event_mode():
+        snapshot = await run_in_threadpool(event_snapshot, tenant_id, knowledge_base_id)
+        documents = {}
+        for node in snapshot['nodes']:
+            metadata = node['metadata']
+            documents.setdefault(metadata['document_id'], {
+                'document_id': metadata['document_id'], 'file_name': metadata['file_name'],
+                'document_version': metadata['document_version'], 'chunk_count': 0})['chunk_count'] += 1
+        return {'documents': list(documents.values())}
     init_rag_service()
     try:
         documents = svc.list_documents()
@@ -143,7 +185,14 @@ async def get_document_chunks(
     doc_id: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
+    tenant_id: str = 'default',
+    knowledge_base_id: str = 'default',
 ):
+    if event_mode():
+        snapshot = await run_in_threadpool(event_snapshot, tenant_id, knowledge_base_id)
+        nodes = [node for node in snapshot['nodes'] if node['metadata']['document_id'] == doc_id]
+        return {'chunks': nodes[(page - 1) * page_size:page * page_size], 'total': len(nodes),
+                'page': page, 'page_size': page_size}
     init_rag_service()
     try:
         return svc.get_document_chunks(doc_id, page=page, page_size=page_size)
@@ -154,6 +203,7 @@ async def get_document_chunks(
 
 @router.delete("/documents/{doc_id:path}")
 async def delete_document(doc_id: str):
+    require_legacy_write()
     init_rag_service()
     try:
         return svc.delete_document(doc_id)
@@ -172,6 +222,7 @@ async def get_chunk_config():
 
 @router.put("/config/chunk")
 async def update_chunk_config(req: ChunkConfigRequest):
+    require_legacy_write()
     if req.chunk_size < 50 or req.chunk_size > 4000:
         raise HTTPException(status_code=400, detail="chunk_size 范围: 50-4000")
     if req.chunk_overlap < 0 or req.chunk_overlap >= req.chunk_size:
@@ -187,6 +238,7 @@ async def update_chunk_config(req: ChunkConfigRequest):
 
 @router.post("/reset")
 async def reset_system():
+    require_legacy_write()
     init_rag_service()
     try:
         return svc.reset_system()
@@ -197,6 +249,13 @@ async def reset_system():
 
 @router.post("/query")
 async def query_docs(req: QueryRequest):
+    if event_mode():
+        try:
+            service = await run_in_threadpool(get_event_query_service)
+            return await service.query(req.query, req.tenant_id, req.knowledge_base_id)
+        except Exception as error:
+            logger.error('事件索引查询失败: %s', type(error).__name__)
+            raise HTTPException(status_code=503, detail='索引查询暂不可用，请检查服务日志和依赖。') from error
     init_rag_service()
     try:
         return await svc.query(
@@ -205,3 +264,12 @@ async def query_docs(req: QueryRequest):
     except Exception as e:
         logger.error(str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get('/ingestion/jobs')
+async def ingestion_jobs(limit: int = Query(20, ge=1, le=200)):
+    from reliable_ingestion.config import RuntimeConfig
+    from reliable_ingestion.store import Inbox
+    jobs = await run_in_threadpool(Inbox(RuntimeConfig.from_env().database).jobs, limit)
+    return {'jobs': [{key: value for key, value in job.items()
+                      if key not in {'payload', 'fingerprint'}} for job in jobs]}

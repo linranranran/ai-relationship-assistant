@@ -5,6 +5,7 @@ from pathlib import Path
 import random
 import sqlite3
 import time
+import uuid
 
 from .errors import PermanentError
 from .events import DocumentEvent
@@ -102,8 +103,8 @@ class Inbox:
 
     def _dead(self, db, job, error):
         db.execute("UPDATE jobs SET status='dead',last_error=? WHERE id=?", (error, job['id']))
-        db.execute('INSERT OR IGNORE INTO dead_letters(id,body,error) VALUES (?,?,?)',
-                   (job['id'], job['payload'].encode(), error))
+        db.execute('INSERT INTO dead_letters(id,body,error) VALUES (?,?,?)',
+                   (job['id'] + ':' + uuid.uuid4().hex, job['payload'].encode(), error))
 
     def recover_interrupted(self):
         # Only call while owning the process-wide writer file lock.
@@ -158,6 +159,11 @@ class Inbox:
     def jobs(self, limit=100):
         with self.connection() as db:
             return [dict(row) for row in db.execute('SELECT * FROM jobs ORDER BY rowid DESC LIMIT ?', (limit,))]
+
+    def job(self, event_id):
+        with self.connection() as db:
+            row = db.execute('SELECT * FROM jobs WHERE id=?', (event_id,)).fetchone()
+            return dict(row) if row else None
 
     def quarantine(self, body, error):
         key = 'invalid-' + hashlib.sha256(body).hexdigest()

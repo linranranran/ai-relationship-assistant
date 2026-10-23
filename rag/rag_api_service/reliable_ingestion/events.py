@@ -19,8 +19,8 @@ class DocumentEvent:
         if len(body) > 1024 * 1024:
             raise PermanentError('event exceeds 1 MiB')
         try:
-            value = json.loads(body)
-        except (ValueError, UnicodeError, TypeError) as exc:
+            value = json.loads(body.decode('utf-8'))
+        except (ValueError, UnicodeError, TypeError, RecursionError) as exc:
             raise PermanentError('event must be UTF-8 JSON') from exc
         if not isinstance(value, dict):
             raise PermanentError('event must be an object')
@@ -35,7 +35,7 @@ class DocumentEvent:
             if not isinstance(value.get(field), str) or not re.fullmatch(
                     r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value[field]):
                 raise PermanentError(f'invalid {field}')
-        if value.get('event_type') not in {'document.created', 'document.updated', 'document.deleted'}:
+        if value.get('event_type') not in ('document.created', 'document.updated', 'document.deleted'):
             raise PermanentError('unsupported event_type')
         version = value.get('document_version')
         if type(version) is not int or not 1 <= version <= 2**63 - 1:
@@ -43,10 +43,12 @@ class DocumentEvent:
         for field in ('trace_id', 'occurred_at', 'content_type'):
             if field in value and (not isinstance(value[field], str) or len(value[field]) > 512):
                 raise PermanentError(f'invalid {field}')
-        if value['event_type'] != 'document.deleted':
-            name, obj = value.get('file_name'), value.get('object')
+        if 'file_name' in value or value['event_type'] != 'document.deleted':
+            name = value.get('file_name')
             if not isinstance(name, str) or not name or len(name) > 255 or '/' in name or '\\' in name:
                 raise PermanentError('file_name must be a base name')
+        if value['event_type'] != 'document.deleted':
+            obj = value.get('object')
             if not isinstance(obj, dict) or obj.keys() - {'bucket', 'key', 'version_id', 'sha256'}:
                 raise PermanentError('invalid object reference')
             for field in ('bucket', 'key', 'sha256'):
