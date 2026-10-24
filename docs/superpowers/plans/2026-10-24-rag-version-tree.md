@@ -39,7 +39,7 @@
 
 **Files:** worker.py, backend.py; tests/test_version_tree_indexing.py.
 
-**Interfaces:** stage(source_event,inbox) uses immutable version identity; reuses verified complete manifest. Worker archives any created version, conditionally publishes current desired selection; activation resolves original version source.
+**Interfaces:** stage(source_event,inbox) uses immutable version identity; Inbox.version_generation resolves registered build and backend.reuse validates it without implicit rebuild. Worker archives any created version, conditionally publishes current desired selection; activation resolves original version source.
 
 - [x] RED tests: branch13 default→activate12→13→12; no parser/Embedding on ready activation; delayed13 and BM25 failure preserve active; missing creation waits without exhausting attempts.
 - [x] Implement node metadata and verified generation reuse, selection-aware publish, completed archive semantics.
@@ -53,4 +53,4 @@
 
 - [x] RED behavior tests for readonly tree state, invalid/conflicting fields and immutable local producer paths.
 - [x] Implement API/CLI, documented10/11/12/13 walkthrough, preserve legacy entry points.
-- [ ] Run full suite including real RabbitMQ tree→manual activation, compile/diff checks, fresh independent whole-change review, regression fixes, scoped commit and push develop-rag.
+- [x] Run full suite including real RabbitMQ tree→manual activation, compile/diff checks, fresh independent whole-change review, regression fixes, scoped commit and push develop-rag.

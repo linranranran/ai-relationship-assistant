@@ -149,3 +149,23 @@ class TreeIndexingTests(unittest.TestCase):
         self.ingest(5, 12, action='document.version.activated')
         self.assertEqual({(n['metadata']['document_id'], n['metadata']['version_id']) for n in self.active_nodes()},
                          {('policy', '12'), ('other', 'other-root')})
+
+    def _assert_ready_selection_rejects_config_change(self, attribute):
+        self.graph()
+        old_snapshot = self.db.snapshot(self.scope)
+        old_generation = next(row['generation'] for row in self.db.versions(self.scope, 'policy')['versions']
+                              if row['version_id'] == '12')
+        setattr(self.backend, attribute, 'changed-config')
+        self.assertEqual(self.ingest(5, 12, action='document.version.activated'), 'dead')
+        self.assertEqual(self.db.snapshot(self.scope), old_snapshot)
+        self.assertEqual(len(self.parsed), 4)
+        self.assertEqual(len(self.embedded), 4)
+        selected = next(row for row in self.db.versions(self.scope, 'policy')['versions'] if row['version_id'] == '12')
+        self.assertEqual(selected['generation'], old_generation)
+        self.assertIn('config', self.db.job('tree-5')['last_error'])
+
+    def test_ready_activation_does_not_implicitly_migrate_embedding_model(self):
+        self._assert_ready_selection_rejects_config_change('model_fingerprint')
+
+    def test_ready_activation_does_not_implicitly_reparse_with_new_pipeline(self):
+        self._assert_ready_selection_rejects_config_change('pipeline_version')

@@ -42,7 +42,9 @@ class Worker:
         generation = None
         if not event.deleted:
             source = self.inbox.version_source(event)
-            generation = self.backend.stage(source, self.inbox)
+            ready_generation = self.inbox.version_generation(source)
+            generation = (self.backend.reuse(source, ready_generation) if ready_generation
+                          else self.backend.stage(source, self.inbox))
             self.inbox.version_ready(source, generation)
         snapshot_id = None
         if self.inbox.version_should_publish(job):

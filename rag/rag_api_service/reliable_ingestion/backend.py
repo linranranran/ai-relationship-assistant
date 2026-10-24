@@ -46,21 +46,33 @@ class VersionedBackend:
         self.model_fingerprint, self.dimensions = model_fingerprint, dimensions
         self.pipeline_version, self.batch_size = pipeline_version, batch_size
 
-    def stage(self, event, inbox):
+    def generation_id(self, event):
         data = event.data
         content_version = event.version_id if event.is_versioned else data['document_version']
         identity = [event.scope, data['document_id'], content_version,
                     data['object']['sha256'], self.pipeline_version, self.model_fingerprint, self.dimensions]
-        generation = hashlib.sha256(canonical(identity).encode()).hexdigest()
+        return hashlib.sha256(canonical(identity).encode()).hexdigest()
+
+    def reuse(self, event, generation):
+        if generation != self.generation_id(event):
+            raise PermanentError('indexed version config changed; restore config or explicitly rebuild/migrate')
+        rows = json.loads((self.root / 'generations' / f'{generation}.json').read_text(encoding='utf-8'))
+        signature = embedding_signature(self.model_fingerprint, self.dimensions)
+        if not rows or any(row['metadata']['generation'] != generation
+                           or row['metadata']['embedding_config'] != signature for row in rows):
+            raise PermanentError('invalid generation manifest or config')
+        self.vector_store.verify(generation, [row['id'] for row in rows])
+        self.mirror(rows)
+        return generation
+
+    def stage(self, event, inbox):
+        data = event.data
+        content_version = event.version_id if event.is_versioned else data['document_version']
+        generation = self.generation_id(event)
         manifest_path = self.root / 'generations' / f'{generation}.json'
         if manifest_path.exists():
             # Completed immutable versions can be activated without downloading or re-embedding.
-            rows = json.loads(manifest_path.read_text(encoding='utf-8'))
-            if not rows or any(row['metadata']['generation'] != generation for row in rows):
-                raise PermanentError('invalid generation manifest')
-            self.vector_store.verify(generation, [row['id'] for row in rows])
-            self.mirror(rows)
-            return generation
+            return self.reuse(event, generation)
         parsed = self.parser(event)
         if not parsed or not any(node['text'].strip() for node in parsed):
             raise PermanentError('document contains no extractable text')

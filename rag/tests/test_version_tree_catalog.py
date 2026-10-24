@@ -213,3 +213,18 @@ class VersionTreeCatalogTests(unittest.TestCase):
         self.assertIsNone(state['active_version_id'])
         self.assertEqual(state['versions'][0]['version_id'], '10')
         self.assertEqual(self.db.versions(self.scope, 'policy')['active_version_id'], '10')
+
+    def test_desired_selection_failure_stays_observable_beyond_recent_job_limit(self):
+        self.build(1, '10')
+        self.build(2, '11', '10')
+        self.accept(tree_event(3, '10', action='document.version.activated'))
+        job = self.db.claim()
+        self.db.fail(job, PermanentError('controlled activation failure'))
+        for index in range(201):
+            self.db.accept(tree_event(1, 'root', event_id=f'unrelated-{index}', document_id=f'other-{index}'))
+        self.assertNotIn(job['id'], {row['id'] for row in self.db.jobs(200)})
+        state = self.db.versions(self.scope, 'policy')
+        self.assertEqual(state['desired_event_id'], job['id'])
+        self.assertEqual(state['desired_job_status'], 'dead')
+        self.assertEqual(state['desired_error'], 'controlled activation failure')
+        self.assertEqual(state['active_version_id'], '11')

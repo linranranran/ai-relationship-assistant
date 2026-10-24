@@ -207,6 +207,9 @@ class Inbox:
     def version_ready(self, event, generation):
         return version_catalog.ready(self, event, generation)
 
+    def version_generation(self, event):
+        return version_catalog.generation(self, event)
+
     def version_should_publish(self, job):
         return version_catalog.should_publish(self, job)
 

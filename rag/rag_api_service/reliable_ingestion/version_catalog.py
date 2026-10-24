@@ -169,6 +169,12 @@ def ready(inbox, source_event, generation):
                 db.execute('UPDATE jobs SET next_at=0 WHERE id=?', (job['id'],))
 
 
+def generation(inbox, event):
+    with inbox.connection() as db:
+        row = _version(db, event.scope, event.data['document_id'], event.version_id)
+        return row['generation'] if row else None
+
+
 def _selection_matches(head, event):
     return bool(head and head['desired_revision'] == event.revision
                 and head['desired_version_id'] == event.version_id
@@ -263,6 +269,9 @@ def retry(inbox, event_id):
 def versions(inbox, scope, document_id):
     with inbox.connection() as db:
         head = _head(db, scope, document_id)
+        desired_job = (db.execute('SELECT id,status,last_error FROM jobs '
+                                  'WHERE scope=? AND document_id=? AND version=?',
+                                  (scope, document_id, head['desired_revision'])).fetchone() if head else None)
         aggregate = db.execute('SELECT deleted FROM heads WHERE scope=? AND document_id=?',
                                (scope, document_id)).fetchone()
         rows = db.execute('SELECT * FROM document_versions WHERE scope=? AND document_id=? '
@@ -288,6 +297,9 @@ def versions(inbox, scope, document_id):
             'active_version_id': head['active_version_id'] if head else None,
             'desired_revision': head['desired_revision'] if head else None,
             'active_revision': head['active_revision'] if head else None,
+            'desired_event_id': desired_job['id'] if desired_job else None,
+            'desired_job_status': desired_job['status'] if desired_job else None,
+            'desired_error': desired_job['last_error'] if desired_job else None,
             'deleted': deleted, 'desired_deleted': bool(head and head['desired_deleted']),
             'versions': output,
         }
