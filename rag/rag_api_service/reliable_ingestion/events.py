@@ -27,6 +27,8 @@ class DocumentEvent:
             raise PermanentError('event must be UTF-8 JSON') from exc
         if not isinstance(value, dict):
             raise PermanentError('event must be an object')
+        if type(value.get('schema_version')) is int and value['schema_version'] == 2:
+            return cls._parse_tree(value)
         allowed = {'schema_version', 'event_id', 'event_type', 'tenant_id',
                    'knowledge_base_id', 'document_id', 'document_version',
                    'file_name', 'object', 'trace_id', 'occurred_at', 'content_type'}
@@ -64,6 +66,62 @@ class DocumentEvent:
         elif 'object' in value:
             raise PermanentError('delete event must omit object')
         return cls(value)
+
+    @classmethod
+    def _parse_tree(cls, value):
+        common = {'schema_version', 'event_id', 'event_type', 'tenant_id', 'knowledge_base_id',
+                  'document_id', 'document_revision', 'trace_id', 'occurred_at'}
+        kind = value.get('event_type')
+        if kind == 'document.version.created':
+            allowed = common | {'version_id', 'parent_version_id', 'version_label',
+                                'file_name', 'object', 'content_type'}
+        elif kind == 'document.version.activated':
+            allowed = common | {'version_id'}
+        elif kind == 'document.deleted':
+            allowed = common
+        else:
+            raise PermanentError('unsupported schema2 event_type')
+        if value.keys() - allowed:
+            raise PermanentError('unknown version event fields')
+        # Reuse validation for identities, revision and immutable file/object fields.
+        base = {key: item for key, item in value.items()
+                if key in common or key in {'file_name', 'object', 'content_type'}}
+        base['schema_version'] = 1
+        base['event_type'] = 'document.created' if kind == 'document.version.created' else 'document.deleted'
+        base['document_version'] = base.pop('document_revision', None)
+        cls.parse(canonical(base).encode())
+        normalized = dict(value)
+
+        def version_identity(item):
+            if type(item) is int and 0 <= item <= 2**63 - 1:
+                item = str(item)
+            if not isinstance(item, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', item):
+                raise PermanentError('invalid version identity')
+            return item
+
+        if kind != 'document.deleted':
+            normalized['version_id'] = version_identity(value.get('version_id'))
+        if kind == 'document.version.created':
+            parent = value.get('parent_version_id')
+            normalized['parent_version_id'] = None if parent is None else version_identity(parent)
+            if normalized['parent_version_id'] == normalized['version_id']:
+                raise PermanentError('a version cannot be its own parent')
+            if 'version_label' in value and (not isinstance(value['version_label'], str)
+                                           or not value['version_label'] or len(value['version_label']) > 128):
+                raise PermanentError('invalid version_label')
+        return cls(normalized)
+
+    @property
+    def is_versioned(self):
+        return self.data['schema_version'] == 2
+
+    @property
+    def revision(self):
+        return self.data['document_revision'] if self.is_versioned else self.data['document_version']
+
+    @property
+    def version_id(self):
+        return self.data.get('version_id') if self.is_versioned else None
 
     @property
     def scope(self):

@@ -48,9 +48,19 @@ class VersionedBackend:
 
     def stage(self, event, inbox):
         data = event.data
-        identity = [event.scope, data['document_id'], data['document_version'],
-                    data['object']['sha256'], self.pipeline_version, self.model_fingerprint]
+        content_version = event.version_id if event.is_versioned else data['document_version']
+        identity = [event.scope, data['document_id'], content_version,
+                    data['object']['sha256'], self.pipeline_version, self.model_fingerprint, self.dimensions]
         generation = hashlib.sha256(canonical(identity).encode()).hexdigest()
+        manifest_path = self.root / 'generations' / f'{generation}.json'
+        if manifest_path.exists():
+            # Completed immutable versions can be activated without downloading or re-embedding.
+            rows = json.loads(manifest_path.read_text(encoding='utf-8'))
+            if not rows or any(row['metadata']['generation'] != generation for row in rows):
+                raise PermanentError('invalid generation manifest')
+            self.vector_store.verify(generation, [row['id'] for row in rows])
+            self.mirror(rows)
+            return generation
         parsed = self.parser(event)
         if not parsed or not any(node['text'].strip() for node in parsed):
             raise PermanentError('document contains no extractable text')
@@ -63,12 +73,19 @@ class VersionedBackend:
                 'embedding_text': original.get('embedding_text', original['text']),
                 'metadata': dict(original.get('metadata', {})) | {
                     'tenant_id': data['tenant_id'], 'knowledge_base_id': data['knowledge_base_id'],
-                    'document_id': data['document_id'], 'document_version': data['document_version'],
+                    'document_id': data['document_id'],
+                    'document_version': data.get('version_label', content_version),
                     'file_name': data['file_name'], 'object_key': data['object']['key'],
                     'bucket': data['object']['bucket'], 'generation': generation, 'chunk_ordinal': ordinal,
                     'embedding_config': embedding_signature(self.model_fingerprint, self.dimensions),
                 },
             }
+            if event.is_versioned:
+                node['metadata'].update(version_id=event.version_id,
+                                        version_label=data.get('version_label', event.version_id),
+                                        creation_revision=event.revision)
+                if data.get('parent_version_id') is not None:
+                    node['metadata']['parent_version_id'] = data['parent_version_id']
             if data['object'].get('version_id'):
                 node['metadata']['object_version_id'] = data['object']['version_id']
             nodes.append(node)
@@ -99,7 +116,7 @@ class VersionedBackend:
         self.mirror(nodes)
         manifest_nodes = [{key: value for key, value in node.items()
                            if key not in {'embedding', 'cache_key'}} for node in nodes]
-        write_json(self.root / 'generations' / f'{generation}.json', manifest_nodes)
+        write_json(manifest_path, manifest_nodes)
         return generation
 
     def _validate_vector(self, vector):

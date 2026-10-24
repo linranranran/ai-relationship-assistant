@@ -11,6 +11,7 @@ class RuntimeConfig:
     dead_queue: str = 'rag.documents.dead.v1'
     max_attempts: int = 4
     retry_base: float = 5
+    version_wait_timeout: float = 3600
     source_mode: str = 'local'
     local_root: Path = Path('file/objects')
     max_object_bytes: int = 100 * 1024 * 1024
@@ -39,6 +40,7 @@ class RuntimeConfig:
             dead_queue=os.getenv('RAG_DEAD_QUEUE', 'rag.documents.dead.v1'),
             max_attempts=int(os.getenv('RAG_EVENT_MAX_ATTEMPTS', '4')),
             retry_base=float(os.getenv('RAG_EVENT_RETRY_BASE', '5')),
+            version_wait_timeout=float(os.getenv('RAG_VERSION_WAIT_TIMEOUT', '3600')),
             source_mode=os.getenv('RAG_OBJECT_SOURCE', 'local'),
             local_root=Path(os.getenv('RAG_LOCAL_OBJECT_ROOT', str(rag_root / 'file' / 'objects'))).resolve(),
             max_object_bytes=int(os.getenv('RAG_MAX_OBJECT_BYTES', str(100 * 1024 * 1024))),

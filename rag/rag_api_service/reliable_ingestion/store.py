@@ -9,18 +9,21 @@ import uuid
 
 from .errors import PermanentError
 from .events import DocumentEvent
+from . import version_catalog
 
 
 class Inbox:
     """Single-host durable handoff, version CAS and retry/dead-letter outbox."""
 
-    def __init__(self, path, max_attempts=4, retry_base=5, clock=time.time, jitter=random.random):
-        if max_attempts < 1 or retry_base < 0:
+    def __init__(self, path, max_attempts=4, retry_base=5, clock=time.time, jitter=random.random,
+                 dependency_timeout=3600):
+        if max_attempts < 1 or retry_base < 0 or dependency_timeout < 0:
             raise ValueError('invalid retry settings')
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.max_attempts, self.retry_base = max_attempts, retry_base
         self.clock, self.jitter = clock, jitter
+        self.dependency_timeout = dependency_timeout
         with self.connection() as db:
             db.execute('PRAGMA journal_mode=WAL')
             db.executescript('''
@@ -43,6 +46,7 @@ class Inbox:
                 CREATE TABLE IF NOT EXISTS embeddings (key TEXT PRIMARY KEY, vector TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS jobs_due ON jobs(status, next_at);
             ''')
+            version_catalog.install(db)
 
     @contextmanager
     def connection(self, write=False):
@@ -62,39 +66,33 @@ class Inbox:
 
     def accept(self, body):
         event = DocumentEvent.parse(body)
-        data, fingerprint = event.data, event.fingerprint
+        if event.is_versioned:
+            return version_catalog.accept(self, event)
+        data, fingerprint = (event.data, event.fingerprint)
         with self.connection(write=True) as db:
             receipt = db.execute('SELECT * FROM receipts WHERE id=?', (data['event_id'],)).fetchone()
             if receipt:
                 if receipt['fingerprint'] != fingerprint:
                     raise PermanentError('event_id reused with different content')
                 return 'duplicate'
-            existing = db.execute('SELECT * FROM jobs WHERE scope=? AND document_id=? AND version=?',
-                                  (event.scope, data['document_id'], data['document_version'])).fetchone()
+            if db.execute('SELECT 1 FROM version_heads WHERE scope=? AND document_id=?', (event.scope, data['document_id'])).fetchone():
+                raise PermanentError('cannot mix schema1 and schema2 for the same document')
+            existing = db.execute('SELECT * FROM jobs WHERE scope=? AND document_id=? AND version=?', (event.scope, data['document_id'], data['document_version'])).fetchone()
             if existing and existing['fingerprint'] != fingerprint:
                 raise PermanentError('same document version has conflicting content')
-            db.execute('INSERT INTO receipts VALUES (?,?,?)',
-                       (data['event_id'], fingerprint, existing['id'] if existing else data['event_id']))
+            db.execute('INSERT INTO receipts VALUES (?,?,?)', (data['event_id'], fingerprint, existing['id'] if existing else data['event_id']))
             if existing:
                 return 'duplicate'
-            head = db.execute('SELECT desired_version FROM heads WHERE scope=? AND document_id=?',
-                              (event.scope, data['document_id'])).fetchone()
+            head = db.execute('SELECT desired_version FROM heads WHERE scope=? AND document_id=?', (event.scope, data['document_id'])).fetchone()
             status = 'superseded' if head and head[0] > data['document_version'] else 'pending'
-            db.execute('INSERT INTO jobs (id,payload,fingerprint,scope,document_id,version,status) '
-                       'VALUES (?,?,?,?,?,?,?)', (data['event_id'], event.to_bytes().decode(), fingerprint,
-                                                event.scope, data['document_id'], data['document_version'], status))
-            db.execute('INSERT INTO heads(scope,document_id,desired_version) VALUES (?,?,?) '
-                       'ON CONFLICT(scope,document_id) DO UPDATE SET '
-                       'desired_version=MAX(desired_version,excluded.desired_version)',
-                       (event.scope, data['document_id'], data['document_version']))
-            db.execute("UPDATE jobs SET status='superseded' WHERE scope=? AND document_id=? "
-                       "AND version<? AND status IN ('pending','retry')",
-                       (event.scope, data['document_id'], data['document_version']))
+            db.execute('INSERT INTO jobs (id,payload,fingerprint,scope,document_id,version,status) VALUES (?,?,?,?,?,?,?)', (data['event_id'], event.to_bytes().decode(), fingerprint, event.scope, data['document_id'], data['document_version'], status))
+            db.execute('INSERT INTO heads(scope,document_id,desired_version) VALUES (?,?,?) ON CONFLICT(scope,document_id) DO UPDATE SET desired_version=MAX(desired_version,excluded.desired_version)', (event.scope, data['document_id'], data['document_version']))
+            db.execute("UPDATE jobs SET status='superseded' WHERE scope=? AND document_id=? AND version<? AND status IN ('pending','retry')", (event.scope, data['document_id'], data['document_version']))
         return 'accepted'
 
     def claim(self):
         with self.connection(write=True) as db:
-            row = db.execute("SELECT * FROM jobs WHERE status IN ('pending','retry') AND next_at<=? "
+            row = db.execute("SELECT * FROM jobs WHERE status IN ('pending','retry','waiting') AND next_at<=? "
                              'ORDER BY rowid LIMIT 1', (self.clock(),)).fetchone()
             if row is None:
                 return None
@@ -117,6 +115,8 @@ class Inbox:
                                ('worker interrupted', row['id']))
 
     def fail(self, job, error):
+        if DocumentEvent.parse(job['payload'].encode()).is_versioned:
+            return version_catalog.fail(self, job, error)
         message = str(error)[:300] if isinstance(error, PermanentError) else type(error).__name__
         with self.connection(write=True) as db:
             head = db.execute('SELECT desired_version FROM heads WHERE scope=? AND document_id=?',
@@ -131,6 +131,8 @@ class Inbox:
                            (self.clock() + delay, message, job['id']))
 
     def publish(self, job, snapshot_id, generation):
+        if DocumentEvent.parse(job['payload'].encode()).is_versioned:
+            return version_catalog.publish(self, job, snapshot_id, generation)
         with self.connection(write=True) as db:
             row = db.execute('SELECT desired_version FROM heads WHERE scope=? AND document_id=?',
                              (job['scope'], job['document_id'])).fetchone()
@@ -180,6 +182,9 @@ class Inbox:
             db.execute('UPDATE dead_letters SET sent=1 WHERE id=?', (message_id,))
 
     def retry(self, event_id):
+        existing = self.job(event_id)
+        if existing and DocumentEvent.parse(existing['payload'].encode()).is_versioned:
+            return version_catalog.retry(self, event_id)
         with self.connection(write=True) as db:
             job = db.execute('SELECT * FROM jobs WHERE id=?', (event_id,)).fetchone()
             if not job or job['status'] != 'dead':
@@ -195,6 +200,18 @@ class Inbox:
         with self.connection() as db:
             row = db.execute('SELECT vector FROM embeddings WHERE key=?', (key,)).fetchone()
             return json.loads(row[0]) if row else None
+
+    def version_source(self, event):
+        return version_catalog.source(self, event)
+
+    def version_ready(self, event, generation):
+        return version_catalog.ready(self, event, generation)
+
+    def version_should_publish(self, job):
+        return version_catalog.should_publish(self, job)
+
+    def versions(self, scope, document_id):
+        return version_catalog.versions(self, scope, document_id)
 
     def cache_embedding(self, key, vector):
         with self.connection(write=True) as db:

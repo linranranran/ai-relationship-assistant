@@ -169,7 +169,9 @@ async def list_docs(tenant_id: str = 'default', knowledge_base_id: str = 'defaul
             metadata = node['metadata']
             documents.setdefault(metadata['document_id'], {
                 'document_id': metadata['document_id'], 'file_name': metadata['file_name'],
-                'document_version': metadata['document_version'], 'chunk_count': 0})['chunk_count'] += 1
+                'document_version': metadata['document_version'], 'chunk_count': 0,
+                **{key: metadata[key] for key in ('version_id', 'parent_version_id', 'version_label')
+                   if key in metadata}})['chunk_count'] += 1
         return {'documents': list(documents.values())}
     init_rag_service()
     try:
@@ -273,3 +275,21 @@ async def ingestion_jobs(limit: int = Query(20, ge=1, le=200)):
     jobs = await run_in_threadpool(Inbox(RuntimeConfig.from_env().database).jobs, limit)
     return {'jobs': [{key: value for key, value in job.items()
                       if key not in {'payload', 'fingerprint'}} for job in jobs]}
+
+
+@router.get('/documents/{document_id}/versions')
+async def document_versions(
+    document_id: str,
+    tenant_id: str = Query('default', pattern=r'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
+    knowledge_base_id: str = Query('default', pattern=r'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
+):
+    if not event_mode():
+        raise HTTPException(status_code=409, detail='版本树仅在事件模式下提供。')
+    from reliable_ingestion.config import RuntimeConfig
+    from reliable_ingestion.events import canonical
+    from reliable_ingestion.store import Inbox
+    inbox = await run_in_threadpool(Inbox, RuntimeConfig.from_env().database)
+    state = await run_in_threadpool(inbox.versions, canonical([tenant_id, knowledge_base_id]), document_id)
+    if state.get('desired_revision') is None:
+        raise HTTPException(status_code=404, detail='未找到该文档的树状版本记录。')
+    return state

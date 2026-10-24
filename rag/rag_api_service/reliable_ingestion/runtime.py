@@ -45,7 +45,8 @@ def run():
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     with writer_lock(config.root / 'worker.lock'):
-        inbox = Inbox(config.database, max_attempts=config.max_attempts, retry_base=config.retry_base)
+        inbox = Inbox(config.database, max_attempts=config.max_attempts, retry_base=config.retry_base,
+                      dependency_timeout=config.version_wait_timeout)
         inbox.recover_interrupted()
 
         def index_loop():
